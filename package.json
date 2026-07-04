@@ -1,0 +1,40 @@
+{
+  "name": "@cookiemunch/sdk",
+  "version": "0.1.0",
+  "description": "Typed REST client for the Cookie Munch Developer API (/v1)",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist", "src", "README.md", "LICENSE"],
+  "keywords": ["cookie-munch", "cmp", "consent", "gdpr", "ccpa", "sdk", "rest-client"],
+  "homepage": "https://cookiemunch.net",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cookie-Munch/sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Cookie-Munch/sdk/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "prepare": "tsup"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
