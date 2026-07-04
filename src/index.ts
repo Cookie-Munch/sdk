@@ -134,6 +134,36 @@ export interface BrandExtractionResult {
   suggestion: BrandSuggestion;
 }
 
+/** A validation/lint issue on a v2 banner flow. */
+export interface FlowIssue {
+  code: string;
+  message: string;
+  path?: string;
+}
+
+/** A site's v2 banner flow + lint issues, from GET /v1/sites/:cbid/flow. */
+export interface SiteFlow {
+  v: 2;
+  flow: Record<string, unknown>;
+  categories: Record<string, unknown>;
+  customCss?: string;
+  lint: FlowIssue[];
+}
+
+/**
+ * A single structured flow edit operation. `op` selects the kind; remaining fields are
+ * that op's args (e.g. { op: 'addView', id, surface, layoutMode }).
+ */
+export type FlowOp = { op: string } & Record<string, unknown>;
+
+/**
+ * Result of editFlow/setFlow. On success the new flow is persisted and returned;
+ * on a validation/lint failure the config is NOT saved and `issues` says why.
+ */
+export type FlowOpResponse =
+  | { ok: true; flow: Record<string, unknown> }
+  | { ok: false; failedAt?: number; op?: unknown; issues: FlowIssue[] };
+
 /** A reusable brand kit (colors/logo/typography) for banner theming. */
 export interface BrandKit {
   id: string;
@@ -252,6 +282,12 @@ export interface CookieMunchClient {
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
     verify(cbid: string, method: 'dns' | 'meta' | 'file'): Promise<VerifyResult>;
     brand(cbid: string): Promise<BrandExtractionResult>;
+    /** Read a site's v2 banner flow (views, categories) plus any lint issues. */
+    getFlow(cbid: string): Promise<SiteFlow>;
+    /** Apply an ordered batch of structured edit ops; validated + persisted if lint-clean. */
+    editFlow(cbid: string, operations: FlowOp[]): Promise<FlowOpResponse>;
+    /** Wholesale-replace the flow with a full v2 config; validated + persisted if valid. */
+    setFlow(cbid: string, config: Record<string, unknown>): Promise<FlowOpResponse>;
   };
   consent: {
     stats(cbid: string, query?: RangeQuery): Promise<ConsentDay[]>;
@@ -380,6 +416,10 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
       verify: (cbid, method) => request('POST', `/sites/${enc(cbid)}/verify`, { method }) as Promise<VerifyResult>,
       brand: (cbid) => request('POST', `/sites/${enc(cbid)}/brand`, {}) as Promise<BrandExtractionResult>,
+      getFlow: (cbid) => get(`/sites/${enc(cbid)}/flow`) as Promise<SiteFlow>,
+      editFlow: (cbid, operations) =>
+        request('POST', `/sites/${enc(cbid)}/flow/ops`, { operations }) as Promise<FlowOpResponse>,
+      setFlow: (cbid, config) => request('PUT', `/sites/${enc(cbid)}/flow`, config) as Promise<FlowOpResponse>,
     },
     consent: {
       stats: (cbid, query) => get(`/sites/${enc(cbid)}/consent/stats${qs(toQuery(query))}`) as Promise<ConsentDay[]>,
