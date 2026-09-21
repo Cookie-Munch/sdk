@@ -858,6 +858,11 @@ export interface CookieMunchClient {
   assets: {
     /** Upload a banner image (≤ 1,000,000 bytes) and get its public URL. Requires sites:write. */
     upload(input: AssetUpload): Promise<{ url: string }>;
+    /**
+     * Delete a stored image. Takes the URL `upload` returned, or just its file name. Only
+     * your own org's images are reachable — the folder comes from your API key.
+     */
+    delete(urlOrFileName: string): Promise<void>;
   };
   /** Provision and manage child orgs. Requires a key with the reseller:* scopes. */
   reseller: {
@@ -1151,6 +1156,10 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     audit: (limit) => get(`/audit${qs({ limit })}`) as Promise<{ entries: AuditEntry[] }>,
     assets: {
       upload: (input) => request('POST', '/assets', input) as Promise<{ url: string }>,
+      delete: async (urlOrFileName) => {
+        const name = urlOrFileName.split('/').pop() ?? urlOrFileName;
+        await request('DELETE', `/assets/${enc(name)}`);
+      },
     },
     reseller: {
       list: () => get('/reseller/customers') as Promise<ResellerChildList>,
