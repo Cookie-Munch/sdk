@@ -152,6 +152,37 @@ describe('consent', () => {
     expect(calls[0]!.url).toContain('stamp=st%2B1%2Fa%3D');
     expect(calls[0]!.url).toContain('/sites/cb-1/');
   });
+
+  it('ingest POSTs to the public /api/v1/consent endpoint and omits subjectId when unset', async () => {
+    const { fc, calls } = client([{ status: 204 }]);
+    await fc.consent.ingest({
+      cbid: 'cb-1',
+      stamp: 'st-1',
+      choices: { preferences: true, statistics: false, marketing: true },
+      method: 'explicit',
+      ver: 1,
+      utc: 1_700_000_000_000,
+      url: 'app://cb-1',
+    });
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.url).toBe('https://api.example.com/api/v1/consent');
+    expect(calls[0]!.body).not.toHaveProperty('subjectId');
+  });
+
+  it('ingest includes subjectId in the POST body when set', async () => {
+    const { fc, calls } = client([{ status: 204 }]);
+    await fc.consent.ingest({
+      cbid: 'cb-1',
+      stamp: 'st-1',
+      choices: { preferences: true, statistics: false, marketing: true },
+      method: 'explicit',
+      ver: 1,
+      utc: 1_700_000_000_000,
+      url: 'app://cb-1',
+      subjectId: 'user-42',
+    });
+    expect((calls[0]!.body as { subjectId?: string }).subjectId).toBe('user-42');
+  });
 });
 
 describe('dsar', () => {
@@ -179,8 +210,10 @@ describe('governance', () => {
     const { fc, calls } = client([{ json: [] }, { status: 201, json: { vendor: { id: 'v1' }, risk: { score: 0, band: 'low' } } }]);
     await fc.vendors.list();
     expect(calls[0]!.url).toBe('https://api.example.com/v1/vendors');
-    await fc.vendors.create({ name: 'Acme' } as never);
+    const created = await fc.vendors.create({ name: 'Acme' } as never);
     expect(calls[1]!.method).toBe('POST');
+    expect(created.vendor.id).toBe('v1');
+    expect(created.risk.band).toBe('low');
   });
 
   it('ropa list / create', async () => {
@@ -337,9 +370,10 @@ describe('member writes', () => {
 
   it('remove DELETEs /v1/members/:userId', async () => {
     const { fc, calls } = client([{ json: { ok: true } }]);
-    await fc.members.remove('u1');
+    const res = await fc.members.remove('u1');
     expect(calls[0]!.method).toBe('DELETE');
     expect(calls[0]!.url).toBe('https://api.example.com/v1/members/u1');
+    expect(res).toEqual({ ok: true });
   });
 });
 
@@ -364,11 +398,14 @@ describe('brand-kit writes', () => {
 
 describe('preference writes', () => {
   it('preferences.save POSTs to /v1/preferences with subjectId + purposes', async () => {
-    const { fc, calls } = client([{ json: { record: { subjectId: 'u1', purposes: { newsletter: true } } } }]);
-    await fc.preferences.save('u1', { newsletter: true });
+    const record = { subjectId: 'u1', purposes: { newsletter: true }, method: 'single-opt-in', confirmed: false, updatedAt: 0, version: 1 };
+    const { fc, calls } = client([{ json: { record } }]);
+    const res = await fc.preferences.save('u1', { newsletter: true });
     expect(calls[0]!.method).toBe('POST');
     expect(calls[0]!.url).toBe('https://api.example.com/v1/preferences');
     expect(calls[0]!.body).toEqual({ subjectId: 'u1', purposes: { newsletter: true } });
+    expect(res.record.subjectId).toBe('u1');
+    expect(res.record.purposes).toEqual({ newsletter: true });
   });
 });
 
@@ -460,5 +497,49 @@ describe('error handling', () => {
   it('error carries status even when body is not JSON', async () => {
     const { fc } = client([{ status: 500, text: 'boom', contentType: 'text/plain' }]);
     await expect(fc.me()).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('populates .code from any error body that carries one, not just scoped-key errors', async () => {
+    // e.g. the banner-library 409 (banner still assigned to sites) — not a scope error.
+    const { fc } = client([{ status: 409, json: { error: 'banner still in use', code: 'banner_in_use' } }]);
+    try {
+      await fc.banners.delete('b1');
+      expect.unreachable();
+    } catch (e) {
+      const err = e as CookieMunchApiError;
+      expect(err.status).toBe(409);
+      expect(err.message).toBe('banner still in use');
+      expect(err.code).toBe('banner_in_use');
+    }
+  });
+
+  it('.code is undefined when the error body has no code field', async () => {
+    const { fc } = client([{ status: 404, json: { error: 'site not found' } }]);
+    try {
+      await fc.sites.get('nope');
+      expect.unreachable();
+    } catch (e) {
+      expect((e as CookieMunchApiError).code).toBeUndefined();
+    }
+  });
+
+  it('consent.ingest errors also populate .code from the response body', async () => {
+    const { fn } = fakeFetch([{ status: 400, json: { error: 'unknown cbid', code: 'unknown_cbid' } }]);
+    const fc = createCookieMunch({ apiKey: 'fck_test', baseUrl: 'https://api.example.com', fetch: fn });
+    try {
+      await fc.consent.ingest({
+        cbid: 'nope',
+        stamp: 's1',
+        choices: { preferences: false, statistics: false, marketing: false },
+        method: 'explicit',
+        ver: 1,
+        utc: 0,
+        url: 'https://x.com',
+      });
+      expect.unreachable();
+    } catch (e) {
+      const err = e as CookieMunchApiError;
+      expect(err.code).toBe('unknown_cbid');
+    }
   });
 });

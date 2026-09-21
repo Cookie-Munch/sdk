@@ -94,16 +94,14 @@ export interface RiskScore {
   band: 'low' | 'medium' | 'high';
 }
 
-/** A vendor as listed, with its computed risk flattened in. */
-export interface ScoredVendor {
+/** A stored vendor record (no computed risk; see {@link ScoredVendor}). Returned as the
+ *  `vendor` field of POST /v1/vendors. */
+export interface VendorRecord extends VendorInput {
   id: string;
-  name: string;
-  category: string;
-  dataShared: string[];
-  dpaSigned: boolean;
-  subprocessors: number;
-  certifications: string[];
-  region: string;
+}
+
+/** A vendor as listed, with its computed risk flattened in. */
+export interface ScoredVendor extends VendorRecord {
   risk: RiskScore;
 }
 
@@ -131,3 +129,21 @@ export interface RopaEntry extends RopaInput {
 
 /** A signed consent receipt (shape owned by @cookiemunch/receipts). */
 export type SignedReceipt = Record<string, unknown>;
+
+/** How a preference-center opt-in was captured. Mirrors @cookiemunch/preferences OptInMethod. */
+export type OptInMethod = 'single-opt-in' | 'double-opt-in';
+
+/**
+ * A subject's saved preference-center record (identity-keyed named purposes, distinct
+ * from the org-level {@link PreferenceItem} catalog). Matches @cookiemunch/preferences
+ * PreferenceRecord (mirrored here per this package's no-server-dependency convention).
+ * Returned wrapped as `{ record }` by POST /v1/preferences.
+ */
+export interface PreferenceRecord {
+  subjectId: string;
+  purposes: Record<string, boolean>;
+  method: OptInMethod;
+  confirmed: boolean;
+  updatedAt: number;
+  version: number;
+}

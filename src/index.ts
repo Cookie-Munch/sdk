@@ -9,6 +9,8 @@
  */
 
 export * from './types.js';
+export * from './consent.js';
+export * from './webhooks.js';
 import type {
   Identity,
   Site,
@@ -23,9 +25,12 @@ import type {
   DsarStatus,
   ScoredVendor,
   VendorInput,
+  VendorRecord,
+  RiskScore,
   RopaEntry,
   RopaInput,
   SignedReceipt,
+  PreferenceRecord,
 } from './types.js';
 
 export interface CookieMunchOptions {
@@ -36,7 +41,12 @@ export interface CookieMunchOptions {
   fetch?: typeof fetch;
 }
 
-/** Thrown for any non-2xx response. `message` is the server's `error` field when present. */
+/**
+ * Thrown for any non-2xx response. `message` is the server's `error` field when present;
+ * `code` is populated from the server's `code` field whenever the error body carries one
+ * (e.g. banner-library conflicts, docs-admin checks) — not only for scoped-key
+ * (`insufficient_scope`) responses. It's `undefined` when the body has no `code`.
+ */
 export class CookieMunchApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -54,7 +64,26 @@ export class CookieMunchApiError extends Error {
  * these top-level `export interface` declarations.
  */
 
-/** A cookie discovered on a site, classified into a consent category. */
+/** A cookie discovered on a site, classified into a consent category (wire shape of the
+ *  cookie-declaration feed). Matches the server's CategorizedCookie schema. */
+export interface CategorizedCookie {
+  name: string;
+  category: 'necessary' | 'preferences' | 'statistics' | 'marketing' | 'unclassified' | (string & {});
+  domain?: string;
+  provider?: string;
+  purpose?: string;
+  expiry?: string;
+}
+
+/** A site's cookie declaration: the latest scan's categorized cookies. This is what
+ *  GET /v1/sites/:cbid/cookies actually returns (a wrapper, not a bare array). */
+export interface CookieDeclaration {
+  /** Epoch-ms of the latest scan, or 0 if none. */
+  updatedAt: number;
+  cookies: CategorizedCookie[];
+}
+
+/** @deprecated The server returns {@link CookieDeclaration}; kept only for back-compat. */
 export interface SiteCookie {
   name: string;
   domain: string;
@@ -65,7 +94,14 @@ export interface SiteCookie {
   firstSeen?: number;
 }
 
-/** The state/result of a site cookie scan. */
+/** Cookie-scan status, from GET /v1/sites/:cbid/scan. */
+export interface ScanStatus {
+  status: 'idle' | 'scanning';
+  /** Epoch-ms of the last completed scan, or null. */
+  lastScannedAt: number | null;
+}
+
+/** @deprecated The server returns {@link ScanStatus}; kept only for back-compat. */
 export interface ScanResult {
   scanId: string;
   status: 'queued' | 'running' | 'complete' | 'failed';
@@ -79,8 +115,7 @@ export interface ScanResult {
 export interface AbResult {
   variant: string;
   impressions: number;
-  optIn: number;
-  optOut: number;
+  optIns: number;
   optInRate: number;
 }
 
@@ -169,10 +204,12 @@ export interface BrandKit {
   id: string;
   orgId: string;
   name: string;
-  colors?: Record<string, string>;
+  /** Banner theme tokens (opaque design object). */
+  theme: Record<string, unknown>;
+  /** Optional banner content overrides (opaque). */
+  content?: Record<string, unknown>;
   logoUrl?: string;
-  font?: string;
-  createdAt: number;
+  customCss?: string;
 }
 
 /** A configurable consent preference/purpose item. */
@@ -187,14 +224,24 @@ export interface PreferenceItem {
 
 /** An organization member. */
 export interface Member {
-  id: string;
-  orgId: string;
+  userId: string;
   email: string;
-  role: string;
-  createdAt: number;
+  role: 'owner' | 'admin' | 'member' | 'viewer' | (string & {});
 }
 
-/** An API key. `secret` is present only in the response that first issues the key. */
+/** Display metadata for an issued key — never the secret. Returned by keys.list(). */
+export interface ApiKeyPrefix {
+  prefix: string;
+  createdAt?: number;
+}
+
+/** A newly issued key. `key` is returned ONCE and never again. Returned by keys.issue(). */
+export interface ApiKeyIssued {
+  key: string;
+  prefix: string;
+}
+
+/** @deprecated No endpoint returns this shape; use {@link ApiKeyPrefix} / {@link ApiKeyIssued}. */
 export interface ApiKey {
   id: string;
   orgId: string;
@@ -205,19 +252,32 @@ export interface ApiKey {
   secret?: string;
 }
 
-/** Input for issuing a new API key. */
+/**
+ * Input for issuing a new API key.
+ *
+ * NOTE: the server's POST /v1/keys currently accepts no body and always mints an
+ * unscoped key — `name` is not yet honoured server-side. It's kept here (rather than
+ * dropped) so a future scoped/named-key endpoint can start reading it without an SDK
+ * major version bump; see {@link CookieMunchClient.keys}.
+ */
 export interface ApiKeyIssueInput {
   name?: string;
+  /** Least privilege: grant only these scopes. Omit for a full-access key. */
+  scopes?: string[];
+  /**
+   * Lock the key to these properties. A locked key works only on those sites and on no
+   * org-wide endpoint — see "Keys locked to properties" in the client reference.
+   */
+  cbids?: string[];
+  /** Expire the key after this many days (1–3650). */
+  expiresInDays?: number;
 }
 
-/** Org usage/quota summary. */
+/** Org usage/quota summary. Matches the server's Usage schema. */
 export interface Usage {
-  orgId: string;
-  plan: string;
-  period: { from: number; to: number };
-  consents: number;
-  sites: number;
-  limit?: number;
+  domains: number;
+  seats: number;
+  monthlyEvents: number;
 }
 
 /** A webhook subscription. `secret` is present only in the create response. */
@@ -232,11 +292,113 @@ export interface WebhookSubscription {
   createdAt: number;
 }
 
+/** A webhook delivery that failed every retry. Replay it by `id`. */
+export interface WebhookDeadLetter {
+  id: string;
+  orgId: string;
+  subscriptionId: string;
+  url: string;
+  eventType: string;
+  cbid: string | null;
+  payload: unknown;
+  attempts: number;
+  lastStatus?: number;
+  lastError?: string;
+  failedAt: number;
+}
+
+/** What a test delivery's endpoint answered. */
+export interface WebhookTestResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+
+/** The key's organisation. */
+export interface Org {
+  id: string;
+  name: string;
+  plan: string;
+  logoUrl: string | null;
+}
+
+/** Change an org's name or logo. `logoUrl: null` removes the logo. */
+export interface OrgUpdate {
+  name?: string;
+  logoUrl?: string | null;
+}
+
+/** One entry in the org's audit log. */
+export interface AuditEntry {
+  id: string;
+  orgId: string;
+  actorUserId: string;
+  actorEmail?: string;
+  action: string;
+  target?: string;
+  meta?: Record<string, unknown>;
+  at: number;
+}
+
+/** Rename a key, or replace its scopes or the properties it is locked to. */
+export interface ApiKeyUpdate {
+  name?: string;
+  scopes?: string[];
+  cbids?: string[];
+}
+
+/** An image to upload: base64 (or a `data:` URL) plus its type. */
+export interface AssetUpload {
+  data: string;
+  contentType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | 'image/svg+xml';
+}
+
+/** Result of erasing a subject's consent for a deletion request. */
+export interface DsarEraseResult {
+  erased: number;
+  encryptionEnabled: boolean;
+  /** Present when no KEK is configured, so nothing was cryptographically erased. */
+  warning?: string;
+  request: DsarRequest;
+}
+
+/** Result of exporting a subject's consent for an access or portability request. */
+export interface DsarExportResult {
+  records: unknown[];
+  count: number;
+  request: DsarRequest;
+}
+
 /** Input for creating a webhook subscription. */
 export interface WebhookCreate {
   url: string;
   events: string[];
   cbid?: string;
+}
+
+/** Fields to change on a webhook subscription. Only those present are sent. */
+export interface WebhookUpdate {
+  url?: string;
+  events?: string[];
+  /** One property, or null for every property in the org. */
+  cbid?: string | null;
+  /** false pauses delivery without deleting the subscription. */
+  active?: boolean;
+}
+
+/** One site to create in a bulk call. */
+export interface BulkSiteInput {
+  domain: string;
+  cbid?: string;
+  platform?: string;
+}
+
+/** Per-item outcome of a bulk create, in input order. */
+export interface BulkSiteResult {
+  ok: boolean;
+  cbid?: string;
+  domain?: string;
+  error?: string;
 }
 
 /** Input for creating a brand kit. */
@@ -266,6 +428,212 @@ export interface BannerRecord {
   updatedAt: number;
 }
 
+/**
+ * Input for the public consent-log ingest endpoint (POST /api/v1/consent) — the
+ * tamper-evident, hash-chained ledger write the browser embed makes. Mirrors the
+ * server's ConsentPayload; optional fields are sent only when set. Records are
+ * anonymised (IP truncated) and hash-chained server-side.
+ */
+export interface ConsentIngestInput {
+  /** The registered site id the consent belongs to. */
+  cbid: string;
+  /** Stable per-subject consent-receipt id (used for erase/export). */
+  stamp: string;
+  /** The subject's cookie-category choices. */
+  choices: { preferences: boolean; statistics: boolean; marketing: boolean };
+  /** How consent was captured. */
+  method: 'explicit' | 'implied';
+  /** Consent/notice version number. */
+  ver: number;
+  /** Epoch-ms the decision was made. */
+  utc: number;
+  /** The URL / screen where consent was captured. */
+  url: string;
+  /** Optional IAB TCF consent string (TCF mode only). */
+  tcString?: string;
+  /** Optional GPP string (GPP mode only). */
+  gppString?: string;
+  /** Optional named-purpose map beyond the standard categories. */
+  purposes?: Record<string, boolean>;
+  /** Optional opaque digest of the exact notice text shown to the subject. */
+  subjectPolicyHash?: string;
+  /** Optional map: named purpose → RoPA entry id. */
+  purposeRopa?: Record<string, string>;
+  /** Optional A/B variant id. */
+  variant?: string;
+  /**
+   * Optional, app-supplied STABLE cross-surface subject id. Lets an org retrieve one
+   * subject's consent history across ALL its sites/surfaces (web + mobile + desktop).
+   * Opaque — stored and bound into the record hash server-side, never interpreted.
+   */
+  subjectId?: string;
+}
+
+/** One of a person's identifiers: an identity-space code plus the normalised value. */
+export interface Identifier {
+  space: string;
+  value: string;
+}
+
+export interface ConsentDecisionInput {
+  purpose: string;
+  allowed: boolean;
+  legalBasis?: string;
+  jurisdiction?: string;
+  provenance?: string;
+  collectedAt?: number;
+}
+
+export interface ProfileAttributeInput {
+  value: string;
+  purpose?: string;
+  collectedAt?: number;
+}
+
+export interface SubscriptionTopicInput {
+  code: string;
+  name?: string;
+  channels: string[];
+  downstream?: Record<string, string>;
+}
+
+/** A warehouse-native enforcement rule. See POST /v1/discovery/enforcement. */
+export interface EnforcementRuleInput {
+  id: string;
+  action: 'mask' | 'restrict';
+  /** Select columns at or above this sensitivity. */
+  minSensitivity?: 'personal' | 'sensitive';
+  /** Select columns in any of these categories. */
+  categories?: string[];
+  /** mask: roles that still see the raw value. */
+  allowRoles?: string[];
+  /** restrict: the purpose a subject must have consented to. */
+  purpose?: string;
+  /** restrict: the column holding the subject id. Default SUBJECT_ID. */
+  subjectColumn?: string;
+}
+
+export interface RegulationSummary {
+  id: string;
+  jurisdiction: string;
+  name: string;
+  /** ISO date the law takes (or took) effect. */
+  effective: string;
+  model: 'opt-in' | 'opt-out';
+  obligations: string[];
+  /** Primary source — the statute or the regulator. */
+  source: string;
+}
+
+export interface RegulatoryFeedResult {
+  /** When a human last checked the dataset against its sources. */
+  reviewedAt: string;
+  /** Days since that review. */
+  ageDays: number;
+  /** How long a review is considered good for. */
+  reviewAfterDays: number;
+  /** True once the review interval has passed — treat the answer with caution. */
+  stale: boolean;
+  regulations: RegulationSummary[];
+}
+
+export interface AiInspectInput {
+  prompt: string;
+  purpose: string;
+  model?: string;
+  actor?: string;
+  direction?: 'prompt' | 'response';
+  /** The subject's current permits, when the call concerns an identified person. */
+  consent?: Record<string, boolean>;
+}
+
+export interface AiInspectResult {
+  action: 'allow' | 'redact' | 'block';
+  /** The text to forward: redacted when `redact`, empty when `block`. */
+  prompt: string;
+  findings: unknown[];
+  reasons: string[];
+  policyIds: string[];
+  blocked: boolean;
+  direction: 'prompt' | 'response';
+}
+
+export type FulfillmentOp = 'locate' | 'export' | 'erase' | 'optOut';
+
+/** A child org provisioned by a reseller. */
+export interface ResellerChild {
+  id: string;
+  name: string;
+  status: 'active' | 'suspended';
+  delegatedAccess?: boolean;
+  /** Per-child DSAR routing override; unset defers to the reseller's policy. */
+  dsarRouting?: 'reseller' | 'child';
+  createdAt?: number;
+  usage?: unknown;
+}
+
+export interface ResellerChildList {
+  children: ResellerChild[];
+  /** Pooled usage across the reseller and all its children, when metering is wired. */
+  aggregate?: { childOrgs: number; sites: number; monthlyEvents: number; monthlyEventsCap: number | null; overCap: boolean };
+}
+
+export interface ResellerChildCreate {
+  name: string;
+  ownerEmail?: string;
+  /** legalName, contactEmail, address, dpoContact. */
+  controller?: Record<string, unknown>;
+  /** Branding overrides, merged onto the reseller's white-label defaults. */
+  whiteLabel?: Record<string, unknown>;
+  delegatedAccess?: boolean;
+  /** Also issue an API key for the new child; it is returned once, as `apiKey`. */
+  mintKey?: boolean;
+  /** Scopes for that key. Defaults to ["sites:read"]. */
+  keyScopes?: string[];
+}
+
+export interface ResellerChildPatch {
+  status?: 'active' | 'suspended';
+  delegatedAccess?: boolean;
+  /** Pin this child's DSAR routing; null clears the override. */
+  dsarRouting?: 'reseller' | 'child' | null;
+  controller?: Record<string, unknown>;
+}
+
+export interface ChildKeyInput {
+  name?: string;
+  scopes?: string[];
+  /** Lock the key to these properties of the child org. */
+  cbids?: string[];
+}
+
+export interface PolicyOptions {
+  /** Contact email shown in the policy. Falls back to the org controller's, then the owner's. */
+  contactEmail?: string;
+  /** YYYY-MM-DD. Defaults to today. */
+  effectiveDate?: string;
+  /** Override the jurisdictions the policy addresses. */
+  jurisdictions?: string[];
+}
+
+export interface AdPersonalizationInput {
+  enabled: boolean;
+  /** Whether personalised ads start on before the visitor chooses. */
+  default?: boolean;
+  label?: string;
+}
+
+export interface SessionAnalysisInput {
+  /** A HAR export of the captured session. */
+  har?: unknown;
+  /** Or the requests directly. */
+  requests?: unknown[];
+  /** The consent state the session ran under. */
+  consent?: Record<string, boolean>;
+  /** Whether Global Privacy Control was set. */
+  gpc?: boolean;
+}
+
 export interface CookieMunchClient {
   me(): Promise<Identity>;
   sites: {
@@ -275,12 +643,24 @@ export interface CookieMunchClient {
     delete(cbid: string): Promise<void>;
     getConfig(cbid: string): Promise<SiteConfig>;
     putConfig(cbid: string, config: SiteConfig): Promise<SiteConfig>;
-    cookies(cbid: string): Promise<SiteCookie[]>;
-    scan(cbid: string): Promise<ScanResult>;
-    scanStatus(cbid: string): Promise<ScanResult>;
+    cookies(cbid: string): Promise<CookieDeclaration>;
+    scan(cbid: string): Promise<ScanStatus>;
+    scanStatus(cbid: string): Promise<ScanStatus>;
     ab(cbid: string): Promise<AbResult[]>;
+    /** Generate the site's privacy and cookie policy, as Markdown. */
+    policy(cbid: string, opts?: PolicyOptions): Promise<string>;
+    /** Turn on the personalised-ads split on whichever banner form the site uses. */
+    setAdPersonalization(cbid: string, input: AdPersonalizationInput): Promise<unknown>;
+    /** Analyse a captured session: trackers that fired after opt-out, personal data leaving the page. */
+    analyzeSession(cbid: string, input: SessionAnalysisInput): Promise<unknown>;
+    /** Which banner design this site uses, or null when none is assigned. */
+    banner(cbid: string): Promise<{ bannerId: string | null }>;
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
-    verify(cbid: string, method: 'dns' | 'meta' | 'file'): Promise<VerifyResult>;
+    verify(cbid: string, method: 'dns' | 'meta' | 'file' | 'embed'): Promise<VerifyResult>;
+    /** Exactly what to publish to prove control of the domain, for each verification method. */
+    verifyChallenge(cbid: string): Promise<unknown>;
+    /** Create up to 100 sites. Partial success: a bad or duplicate item fails only itself. */
+    createBulk(sites: BulkSiteInput[]): Promise<{ results: BulkSiteResult[] }>;
     brand(cbid: string): Promise<BrandExtractionResult>;
     /** Read a site's v2 banner flow (views, categories) plus any lint issues. */
     getFlow(cbid: string): Promise<SiteFlow>;
@@ -298,44 +678,223 @@ export interface CookieMunchClient {
     eraseSubject(cbid: string, stamp: string): Promise<{ erased: number }>;
     /** Export a data subject's consent records by their consent-receipt stamp (GDPR access/portability). */
     exportSubject(cbid: string, stamp: string): Promise<{ cbid: string; stamp: string; records: unknown[]; count: number }>;
+    /** Record a consent decision via the PUBLIC ingest endpoint (POST /api/v1/consent). No `/v1`
+     *  prefix and no auth is required by the server (the cbid must be a registered site); for
+     *  server-side / non-browser consent flows. Pass `subjectId` to correlate a subject cross-surface. */
+    ingest(input: ConsentIngestInput): Promise<void>;
   };
   dsar: {
     list(): Promise<DsarRequest[]>;
     create(input: DsarCreate): Promise<{ request: DsarRequest }>;
     advance(id: string, toStatus: DsarStatus): Promise<{ request: DsarRequest }>;
+    /** The subject-facing response notice for a request, as plain text. */
+    response(id: string): Promise<string>;
+    /**
+     * Erase a subject's consent records on one site, for a deletion request past identity
+     * verification. Noted on the request. Requires dsar:write and consent:write.
+     */
+    erase(id: string, cbid: string, stamp: string): Promise<DsarEraseResult>;
+    /**
+     * A subject's consent records on one site, for an access or portability request past
+     * identity verification. Noted on the request. Requires dsar:write and consent:read.
+     */
+    export(id: string, cbid: string, stamp: string): Promise<DsarExportResult>;
   };
   vendors: {
     list(): Promise<ScoredVendor[]>;
-    create(input: VendorInput): Promise<{ vendor: Record<string, unknown>; risk: { score: number; band: string } }>;
+    create(input: VendorInput): Promise<{ vendor: VendorRecord; risk: RiskScore }>;
   };
   ropa: {
     list(): Promise<RopaEntry[]>;
     create(input: RopaInput): Promise<{ entry: RopaEntry }>;
+    /** The org's RoPA (GDPR Art. 30) as CSV. */
+    exportCsv(): Promise<string>;
   };
   brandKits: {
     list(): Promise<BrandKit[]>;
     create(input: BrandKitCreate): Promise<{ kit: BrandKit }>;
     delete(id: string): Promise<void>;
   };
+  /**
+   * Identity resolution. Reads are POSTs on purpose: a person's identifiers travel in the
+   * body, never a URL where they would land in access logs.
+   */
+  identity: {
+    /** Canonical subject id for any known identifier, else null. */
+    resolve(identifiers: Identifier[]): Promise<{ subjectId: string | null }>;
+    /** Stitch identifiers into one subject (merging clusters when a link bridges them). */
+    link(identifiers: Identifier[]): Promise<{ subjectId: string }>;
+    cluster(subjectId: string): Promise<{ subjectId: string; identifiers: Identifier[] }>;
+  };
+  /** The Permission Vault: a resolved person's current consent state. */
+  vault: {
+    record(identifiers: Identifier[], decisions: ConsentDecisionInput[]): Promise<{ subjectId: string; permits: unknown[] }>;
+    current(identifiers: Identifier[]): Promise<{ purposes: Record<string, boolean> }>;
+    permits(identifiers: Identifier[]): Promise<{ permits: unknown[] }>;
+  };
+  /** The unified profile, with consent enforced at ACTIVATION time. */
+  profile: {
+    get(identifiers: Identifier[]): Promise<unknown>;
+    setAttributes(identifiers: Identifier[], attributes: Record<string, ProfileAttributeInput>): Promise<{ subjectId: string }>;
+    /** Attribute values usable for `purpose` — {} when the person hasn't consented to it. */
+    activate(identifiers: Identifier[], purpose: string): Promise<{ attributes: Record<string, string> }>;
+  };
+  /** Marketing preferences as topics x channels. */
+  subscriptions: {
+    /** The org's topic catalog — what a subject can subscribe TO. */
+    topics(): Promise<{ topics: SubscriptionTopicInput[] }>;
+    /** Replace the catalog. It is authored whole, not patched. */
+    setTopics(topics: SubscriptionTopicInput[]): Promise<{ topics: SubscriptionTopicInput[] }>;
+    get(subjectId: string): Promise<unknown>;
+    set(subjectId: string, topic: string, channel: string, optedIn: boolean): Promise<unknown>;
+    unsubscribeAll(subjectId: string): Promise<unknown>;
+    resubscribe(subjectId: string): Promise<unknown>;
+    activation(subjectId: string, topics: SubscriptionTopicInput[]): Promise<{ entries: unknown[] }>;
+  };
+  /** DPIA / PIA / LIA / TIA / AI-impact / vendor assessments. */
+  assessments: {
+    templates(): Promise<{ templates: unknown[] }>;
+    list(): Promise<{ assessments: unknown[] }>;
+    start(template: string, subject: string): Promise<unknown>;
+    /** The record plus its derived score, completeness and SME routing. */
+    get(id: string): Promise<unknown>;
+    answer(id: string, questionId: string, value: string | number | boolean): Promise<unknown>;
+    /** Fill from the org's latest data map; never overwrites a human answer. */
+    autoPopulateFromMap(id: string): Promise<{ assessment: unknown; applied: string[] }>;
+    /** Fill from evidence you supply. Never overwrites a human answer; records `source` as provenance. */
+    autoPopulate(id: string, evidence: Record<string, unknown>, source?: string): Promise<{ assessment: unknown; applied: string[] }>;
+    submit(id: string): Promise<unknown>;
+    approve(id: string, by: string): Promise<unknown>;
+    reject(id: string, by: string, reason: string): Promise<unknown>;
+  };
+  /** The data map produced by an in-environment scan (metadata only). */
+  discovery: {
+    ingestMap(map: unknown): Promise<{ scannedAt: number; systems: number }>;
+    getMap(): Promise<unknown>;
+    ropaDrafts(): Promise<{ drafts: unknown[] }>;
+    evidence(): Promise<{ evidence: Record<string, unknown> }>;
+    /** What changed since the last scan, and where the RoPA disagrees with reality. */
+    drift(): Promise<{ comparedTo: number | null; sinceLastScan: unknown[]; againstRecord: unknown[] }>;
+    /**
+     * Plan warehouse-native policy from the latest map. Returns a PLAN with its own
+     * revert — nothing is applied to your warehouse by calling this.
+     */
+    planEnforcement(
+      dialect: 'postgres' | 'mysql' | 'snowflake',
+      rules: EnforcementRuleInput[],
+      opts?: { permitsTable?: string; policyPrefix?: string },
+    ): Promise<{ plan: { statements: unknown[]; revert: unknown[]; skipped: unknown[] } }>;
+  };
+  /**
+   * Regulatory intelligence: the curated privacy-law dataset. Every response carries
+   * `reviewedAt` — the dataset ships with the product and is only as current as its
+   * last review. Not legal advice.
+   */
+  regulatory: {
+    /** The dataset, optionally narrowed to the jurisdictions you operate in. */
+    feed(jurisdictions?: string[]): Promise<RegulatoryFeedResult>;
+    /** What takes effect within `days` (default 180), soonest first. */
+    upcoming(days?: number): Promise<RegulatoryFeedResult>;
+  };
+  /** AI governance: policy, the inline gateway, inventory and lineage. */
+  ai: {
+    getPolicy(): Promise<{ policy: unknown; configured: boolean }>;
+    setPolicy(policy: unknown): Promise<{ policy: unknown }>;
+    /** Enforce consent + policy on a prompt or response. Requires the ai:inspect scope. */
+    inspect(input: AiInspectInput): Promise<AiInspectResult>;
+    inventory(): Promise<{ systems: unknown[]; shadow: unknown[] }>;
+    lineage(): Promise<{ lineage: Record<string, string[]> }>;
+    registerSystem(input: { id: string; name: string; provider?: string; purpose?: string }): Promise<unknown>;
+    /** The AI systems declared with registerSystem. */
+    systems(): Promise<unknown>;
+    audit(limit?: number): Promise<{ entries: unknown[] }>;
+  };
+  /** DSR fulfillment: plan work per system, poll it from an in-VPC agent, report outcomes. */
+  fulfillment: {
+    sla(): Promise<unknown>;
+    plan(requestId: string, systems: Array<{ system: string; operation: FulfillmentOp }>, includeHistorical?: boolean): Promise<{ requestId: string; tasks: unknown[] }>;
+    status(requestId: string): Promise<unknown>;
+    /** In-VPC agent: poll pending tasks. */
+    pendingTasks(limit?: number): Promise<{ tasks: unknown[] }>;
+    /** In-VPC agent: report an outcome. Only the outcome crosses the boundary. */
+    reportTask(taskId: string, ok: boolean, error?: string): Promise<unknown>;
+  };
   preferences: {
     list(): Promise<PreferenceItem[]>;
-    save(subjectId: string, purposes: Record<string, boolean>): Promise<unknown>;
+    /** Save/update a subject's named-purpose opt-ins. Returns the persisted record. */
+    save(subjectId: string, purposes: Record<string, boolean>): Promise<{ record: PreferenceRecord }>;
+    /** One subject's record. A subject with none has empty `purposes`. */
+    get(subjectId: string): Promise<PreferenceRecord>;
   };
   members: {
     list(): Promise<Member[]>;
     invite(email: string, role: string): Promise<{ member: { userId: string; email: string; role: string } }>;
     setRole(userId: string, role: string): Promise<{ member: { userId: string; email: string; role: string } }>;
-    remove(userId: string): Promise<unknown>;
+    remove(userId: string): Promise<{ ok: true }>;
   };
   keys: {
-    list(): Promise<ApiKey[]>;
-    issue(input?: ApiKeyIssueInput): Promise<ApiKey>;
+    list(): Promise<ApiKeyPrefix[]>;
+    /**
+     * Issue a new API key; the secret is returned once. Pass `scopes` and/or `cbids` for a
+     * least-privilege key — omit both for full access to the whole org.
+     */
+    issue(input?: ApiKeyIssueInput): Promise<ApiKeyIssued>;
+    /** Revoke a key by its prefix. Immediate. */
+    revoke(prefix: string): Promise<void>;
+    /** Rotate a key: a new secret, returned once, with the same scopes, lock and expiry. The old one stops working. */
+    roll(prefix: string): Promise<ApiKeyIssued>;
+    /** Rename a key, or replace its scopes or property lock. Only the fields sent change. */
+    update(prefix: string, patch: ApiKeyUpdate): Promise<{ ok: true }>;
   };
   usage(): Promise<Usage>;
+  /** The key's organisation. Requires an unscoped key that is not property-locked. */
+  org: {
+    get(): Promise<Org>;
+    /** Rename the org or set its logo. Deleting the org is not available through the API. */
+    update(patch: OrgUpdate): Promise<Org>;
+  };
+  /** The org's audit log, newest first. API actions appear as `apikey:<prefix>`. */
+  audit(limit?: number): Promise<{ entries: AuditEntry[] }>;
+  assets: {
+    /** Upload a banner image (≤ 1,000,000 bytes) and get its public URL. Requires sites:write. */
+    upload(input: AssetUpload): Promise<{ url: string }>;
+  };
+  /** Provision and manage child orgs. Requires a key with the reseller:* scopes. */
+  reseller: {
+    list(): Promise<ResellerChildList>;
+    /** Provision a child org. With `mintKey`, its first API key is returned once, as `apiKey`. */
+    create(input: ResellerChildCreate): Promise<{ child: ResellerChild; apiKey?: string }>;
+    get(id: string): Promise<unknown>;
+    update(id: string, patch: ResellerChildPatch): Promise<unknown>;
+    /**
+     * Deprovision a child. Suspends it by default, which is reversible; `{ purge: true }`
+     * hard-deletes it and its data, which is not.
+     */
+    deprovision(id: string, opts?: { purge?: boolean }): Promise<void>;
+    listKeys(id: string): Promise<ApiKeyPrefix[]>;
+    /** Mint an API key for a child. The secret is returned once. */
+    mintKey(id: string, input?: ChildKeyInput): Promise<ApiKeyIssued>;
+    revokeKey(id: string, prefix: string): Promise<void>;
+  };
   webhooks: {
     list(): Promise<WebhookSubscription[]>;
     create(input: WebhookCreate): Promise<WebhookSubscription>;
+    /** Change or pause a subscription. `{ active: false }` pauses without deleting it. */
+    update(id: string, patch: WebhookUpdate): Promise<WebhookSubscription>;
     delete(id: string): Promise<void>;
+    /** Rotate the signing secret. The new secret is returned once. */
+    rollSecret(id: string): Promise<{ secret: string }>;
+    /** Send a signed test event now and report what the endpoint answered. */
+    test(id: string): Promise<WebhookTestResult>;
+    /** Deliveries that failed every retry, newest first. */
+    deadLetters(): Promise<{ deadLetters: WebhookDeadLetter[] }>;
+    /** Deliver a dead letter again, to the subscription as it is now. */
+    replayDeadLetter(id: string): Promise<unknown>;
+  };
+  /** One person's consent across every site in the org, by the subjectId your apps attach. */
+  subjects: {
+    /** Requires consent:read; not available to property-locked keys. */
+    consent(subjectId: string): Promise<{ subjectId: string; records: unknown[]; count: number; sites: string[] }>;
   };
   banners: {
     list(): Promise<BannerSummary[]>;
@@ -408,13 +967,25 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       },
       getConfig: (cbid) => get(`/sites/${enc(cbid)}/config`) as Promise<SiteConfig>,
       putConfig: (cbid, config) => request('PUT', `/sites/${enc(cbid)}/config`, config) as Promise<SiteConfig>,
-      cookies: (cbid) => get(`/sites/${enc(cbid)}/cookies`) as Promise<SiteCookie[]>,
-      scan: (cbid) => request('POST', `/sites/${enc(cbid)}/scan`) as Promise<ScanResult>,
-      scanStatus: (cbid) => get(`/sites/${enc(cbid)}/scan`) as Promise<ScanResult>,
+      cookies: (cbid) => get(`/sites/${enc(cbid)}/cookies`) as Promise<CookieDeclaration>,
+      scan: (cbid) => request('POST', `/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
+      scanStatus: (cbid) => get(`/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
       ab: (cbid) => get(`/sites/${enc(cbid)}/ab`) as Promise<AbResult[]>,
+      policy: (cbid, o) =>
+        request(
+          'GET',
+          `/sites/${enc(cbid)}/policy${qs({ contactEmail: o?.contactEmail, effectiveDate: o?.effectiveDate, jurisdictions: o?.jurisdictions?.join(',') })}`,
+          undefined,
+          true,
+        ) as Promise<string>,
+      setAdPersonalization: (cbid, input) => request('POST', `/sites/${enc(cbid)}/elements/ad-personalization`, input),
+      analyzeSession: (cbid, input) => request('POST', `/sites/${enc(cbid)}/sentry`, input),
+      banner: (cbid) => get(`/sites/${enc(cbid)}/banner`) as Promise<{ bannerId: string | null }>,
       snippet: (cbid, opts) =>
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
       verify: (cbid, method) => request('POST', `/sites/${enc(cbid)}/verify`, { method }) as Promise<VerifyResult>,
+      verifyChallenge: (cbid) => get(`/sites/${enc(cbid)}/verify/challenge`),
+      createBulk: (sites) => request('POST', '/sites/bulk', { sites }) as Promise<{ results: BulkSiteResult[] }>,
       brand: (cbid) => request('POST', `/sites/${enc(cbid)}/brand`, {}) as Promise<BrandExtractionResult>,
       getFlow: (cbid) => get(`/sites/${enc(cbid)}/flow`) as Promise<SiteFlow>,
       editFlow: (cbid, operations) =>
@@ -430,19 +1001,44 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         request('POST', `/sites/${enc(cbid)}/erase-consent`, { stamp }) as Promise<{ erased: number }>,
       exportSubject: (cbid, stamp) =>
         request('GET', `/sites/${enc(cbid)}/subject-export?stamp=${enc(stamp)}`) as Promise<{ cbid: string; stamp: string; records: unknown[]; count: number }>,
+      ingest: async (input) => {
+        // The public ingest endpoint lives under /api/v1, not the /v1 dev-API prefix,
+        // so it is called directly rather than via `request` (which prepends /v1).
+        const res = await doFetch(`${opts.baseUrl.replace(/\/+$/, '')}/api/v1/consent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(input),
+        });
+        if (!res.ok) {
+          let message = `consent ingest failed with status ${res.status}`;
+          let code: string | undefined;
+          try {
+            const data = (await res.json()) as { error?: string; code?: string };
+            if (typeof data.error === 'string') message = data.error;
+            if (typeof data.code === 'string') code = data.code;
+          } catch {
+            /* non-JSON error body — keep the default message */
+          }
+          throw new CookieMunchApiError(res.status, message, code);
+        }
+      },
     },
     dsar: {
       list: () => get('/dsar') as Promise<DsarRequest[]>,
       create: (input) => request('POST', '/dsar', input) as Promise<{ request: DsarRequest }>,
       advance: (id, toStatus) => request('POST', `/dsar/${enc(id)}/advance`, { toStatus }) as Promise<{ request: DsarRequest }>,
+      response: (id) => request('GET', `/dsar/${enc(id)}/response`, undefined, true) as Promise<string>,
+      erase: (id, cbid, stamp) => request('POST', `/dsar/${enc(id)}/erase`, { cbid, stamp }) as Promise<DsarEraseResult>,
+      export: (id, cbid, stamp) => request('POST', `/dsar/${enc(id)}/export`, { cbid, stamp }) as Promise<DsarExportResult>,
     },
     vendors: {
       list: () => get('/vendors') as Promise<ScoredVendor[]>,
-      create: (input) => request('POST', '/vendors', input) as Promise<{ vendor: Record<string, unknown>; risk: { score: number; band: string } }>,
+      create: (input) => request('POST', '/vendors', input) as Promise<{ vendor: VendorRecord; risk: RiskScore }>,
     },
     ropa: {
       list: () => get('/ropa') as Promise<RopaEntry[]>,
       create: (input) => request('POST', '/ropa', input) as Promise<{ entry: RopaEntry }>,
+      exportCsv: () => request('GET', '/ropa/export.csv', undefined, true) as Promise<string>,
     },
     brandKits: {
       list: () => get('/brand-kits') as Promise<BrandKit[]>,
@@ -451,9 +1047,84 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         await request('DELETE', `/brand-kits/${enc(id)}`);
       },
     },
+    identity: {
+      resolve: (identifiers) => request('POST', '/identity/resolve', { identifiers }) as Promise<{ subjectId: string | null }>,
+      link: (identifiers) => request('POST', '/identity/link', { identifiers }) as Promise<{ subjectId: string }>,
+      cluster: (subjectId) => get(`/identity/${enc(subjectId)}`) as Promise<{ subjectId: string; identifiers: Identifier[] }>,
+    },
+    vault: {
+      record: (identifiers, decisions) => request('POST', '/vault/record', { identifiers, decisions }) as Promise<{ subjectId: string; permits: unknown[] }>,
+      current: (identifiers) => request('POST', '/vault/current', { identifiers }) as Promise<{ purposes: Record<string, boolean> }>,
+      permits: (identifiers) => request('POST', '/vault/permits', { identifiers }) as Promise<{ permits: unknown[] }>,
+    },
+    profile: {
+      get: (identifiers) => request('POST', '/profile/get', { identifiers }),
+      setAttributes: (identifiers, attributes) => request('POST', '/profile/attributes', { identifiers, attributes }) as Promise<{ subjectId: string }>,
+      activate: (identifiers, purpose) => request('POST', '/profile/activate', { identifiers, purpose }) as Promise<{ attributes: Record<string, string> }>,
+    },
+    subscriptions: {
+      topics: () => get('/subscriptions/topics') as Promise<{ topics: SubscriptionTopicInput[] }>,
+      setTopics: (topics) => request('PUT', '/subscriptions/topics', { topics }) as Promise<{ topics: SubscriptionTopicInput[] }>,
+      get: (subjectId) => get(`/subscriptions/${enc(subjectId)}`),
+      set: (subjectId, topic, channel, optedIn) => request('PUT', `/subscriptions/${enc(subjectId)}`, { topic, channel, optedIn }),
+      unsubscribeAll: (subjectId) => request('POST', `/subscriptions/${enc(subjectId)}/unsubscribe-all`),
+      resubscribe: (subjectId) => request('POST', `/subscriptions/${enc(subjectId)}/resubscribe`),
+      activation: (subjectId, topics) => request('POST', `/subscriptions/${enc(subjectId)}/activation`, { topics }) as Promise<{ entries: unknown[] }>,
+    },
+    assessments: {
+      templates: () => get('/assessments/templates') as Promise<{ templates: unknown[] }>,
+      list: () => get('/assessments') as Promise<{ assessments: unknown[] }>,
+      start: (template, subject) => request('POST', '/assessments', { template, subject }),
+      get: (id) => get(`/assessments/${enc(id)}`),
+      answer: (id, questionId, value) => request('POST', `/assessments/${enc(id)}/answer`, { questionId, value }),
+      autoPopulateFromMap: (id) => request('POST', `/assessments/${enc(id)}/autopopulate-from-map`) as Promise<{ assessment: unknown; applied: string[] }>,
+      autoPopulate: (id, evidence, source) =>
+        request('POST', `/assessments/${enc(id)}/autopopulate`, { evidence, ...(source !== undefined ? { source } : {}) }) as Promise<{ assessment: unknown; applied: string[] }>,
+      submit: (id) => request('POST', `/assessments/${enc(id)}/submit`),
+      approve: (id, by) => request('POST', `/assessments/${enc(id)}/approve`, { by }),
+      reject: (id, by, reason) => request('POST', `/assessments/${enc(id)}/reject`, { by, reason }),
+    },
+    discovery: {
+      ingestMap: (map) => request('POST', '/discovery/map', { map }) as Promise<{ scannedAt: number; systems: number }>,
+      getMap: () => get('/discovery/map'),
+      ropaDrafts: () => get('/discovery/ropa-drafts') as Promise<{ drafts: unknown[] }>,
+      evidence: () => get('/discovery/evidence') as Promise<{ evidence: Record<string, unknown> }>,
+      drift: () => get('/discovery/drift') as Promise<{ comparedTo: number | null; sinceLastScan: unknown[]; againstRecord: unknown[] }>,
+      planEnforcement: (dialect, rules, opts) =>
+        request('POST', '/discovery/enforcement', {
+          dialect,
+          rules,
+          ...(opts?.permitsTable !== undefined ? { permitsTable: opts.permitsTable } : {}),
+          ...(opts?.policyPrefix !== undefined ? { policyPrefix: opts.policyPrefix } : {}),
+        }) as Promise<{ plan: { statements: unknown[]; revert: unknown[]; skipped: unknown[] } }>,
+    },
+    regulatory: {
+      feed: (jurisdictions) =>
+        get(`/regulatory/feed${qs({ jurisdictions: jurisdictions?.join(',') })}`) as Promise<RegulatoryFeedResult>,
+      upcoming: (days) => get(`/regulatory/upcoming${qs({ days })}`) as Promise<RegulatoryFeedResult>,
+    },
+    ai: {
+      getPolicy: () => get('/ai/policy') as Promise<{ policy: unknown; configured: boolean }>,
+      setPolicy: (policy) => request('PUT', '/ai/policy', { policy }) as Promise<{ policy: unknown }>,
+      inspect: (input) => request('POST', '/ai/inspect', input) as Promise<AiInspectResult>,
+      inventory: () => get('/ai/inventory') as Promise<{ systems: unknown[]; shadow: unknown[] }>,
+      lineage: () => get('/ai/lineage') as Promise<{ lineage: Record<string, string[]> }>,
+      registerSystem: (input) => request('POST', '/ai/systems', input),
+      systems: () => get('/ai/systems'),
+      audit: (limit) => get(`/ai/audit${qs({ limit })}`) as Promise<{ entries: unknown[] }>,
+    },
+    fulfillment: {
+      sla: () => get('/dsar/sla'),
+      plan: (requestId, systems, includeHistorical) =>
+        request('POST', `/dsar/${enc(requestId)}/plan`, { systems, ...(includeHistorical ? { includeHistorical: true } : {}) }) as Promise<{ requestId: string; tasks: unknown[] }>,
+      status: (requestId) => get(`/dsar/${enc(requestId)}/fulfillment`),
+      pendingTasks: (limit) => get(`/dsar/agent/tasks${qs({ limit })}`) as Promise<{ tasks: unknown[] }>,
+      reportTask: (taskId, ok, error) => request('POST', `/dsar/agent/tasks/${enc(taskId)}/result`, { ok, ...(error !== undefined ? { error } : {}) }),
+    },
     preferences: {
       list: () => get('/preferences') as Promise<PreferenceItem[]>,
-      save: (subjectId, purposes) => request('POST', '/preferences', { subjectId, purposes }),
+      save: (subjectId, purposes) => request('POST', '/preferences', { subjectId, purposes }) as Promise<{ record: PreferenceRecord }>,
+      get: (subjectId) => get(`/preferences/${enc(subjectId)}`) as Promise<PreferenceRecord>,
     },
     members: {
       list: () => get('/members') as Promise<Member[]>,
@@ -461,19 +1132,55 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         request('POST', '/members', { email, role }) as Promise<{ member: { userId: string; email: string; role: string } }>,
       setRole: (userId, role) =>
         request('PATCH', `/members/${enc(userId)}`, { role }) as Promise<{ member: { userId: string; email: string; role: string } }>,
-      remove: (userId) => request('DELETE', `/members/${enc(userId)}`),
+      remove: (userId) => request('DELETE', `/members/${enc(userId)}`) as Promise<{ ok: true }>,
     },
     keys: {
-      list: () => get('/keys') as Promise<ApiKey[]>,
-      issue: (input) => request('POST', '/keys', input ?? {}) as Promise<ApiKey>,
+      list: () => get('/keys') as Promise<ApiKeyPrefix[]>,
+      issue: (input) => request('POST', '/keys', input ?? {}) as Promise<ApiKeyIssued>,
+      revoke: async (prefix) => {
+        await request('DELETE', `/keys/${enc(prefix)}`);
+      },
+      roll: (prefix) => request('POST', `/keys/${enc(prefix)}/roll`) as Promise<ApiKeyIssued>,
+      update: (prefix, patch) => request('PATCH', `/keys/${enc(prefix)}`, patch) as Promise<{ ok: true }>,
     },
     usage: () => get('/usage') as Promise<Usage>,
+    org: {
+      get: () => get('/org') as Promise<Org>,
+      update: (patch) => request('PATCH', '/org', patch) as Promise<Org>,
+    },
+    audit: (limit) => get(`/audit${qs({ limit })}`) as Promise<{ entries: AuditEntry[] }>,
+    assets: {
+      upload: (input) => request('POST', '/assets', input) as Promise<{ url: string }>,
+    },
+    reseller: {
+      list: () => get('/reseller/customers') as Promise<ResellerChildList>,
+      create: (input) => request('POST', '/reseller/customers', input) as Promise<{ child: ResellerChild; apiKey?: string }>,
+      get: (id) => get(`/reseller/customers/${enc(id)}`),
+      update: (id, patch) => request('PATCH', `/reseller/customers/${enc(id)}`, patch),
+      deprovision: async (id, o) => {
+        await request('DELETE', `/reseller/customers/${enc(id)}${qs({ purge: o?.purge ? 'true' : undefined })}`);
+      },
+      listKeys: (id) => get(`/reseller/customers/${enc(id)}/keys`) as Promise<ApiKeyPrefix[]>,
+      mintKey: (id, input) => request('POST', `/reseller/customers/${enc(id)}/keys`, input ?? {}) as Promise<ApiKeyIssued>,
+      revokeKey: async (id, prefix) => {
+        await request('DELETE', `/reseller/customers/${enc(id)}/keys/${enc(prefix)}`);
+      },
+    },
     webhooks: {
       list: () => get('/webhooks') as Promise<WebhookSubscription[]>,
       create: (input) => request('POST', '/webhooks', input) as Promise<WebhookSubscription>,
+      update: (id, patch) => request('PATCH', `/webhooks/${enc(id)}`, patch) as Promise<WebhookSubscription>,
       delete: async (id) => {
         await request('DELETE', `/webhooks/${enc(id)}`);
       },
+      rollSecret: (id) => request('POST', `/webhooks/${enc(id)}/roll`) as Promise<{ secret: string }>,
+      test: (id) => request('POST', `/webhooks/${enc(id)}/test`) as Promise<WebhookTestResult>,
+      deadLetters: () => get('/webhooks/dead-letters') as Promise<{ deadLetters: WebhookDeadLetter[] }>,
+      replayDeadLetter: (id) => request('POST', `/webhooks/dead-letters/${enc(id)}/replay`),
+    },
+    subjects: {
+      consent: (subjectId) =>
+        get(`/subjects/${enc(subjectId)}/consent`) as Promise<{ subjectId: string; records: unknown[]; count: number; sites: string[] }>,
     },
     banners: {
       list: () => get('/banners') as Promise<BannerSummary[]>,

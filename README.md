@@ -34,6 +34,27 @@ runtimes; it defaults to the global `fetch`.
 - `dsar.list() / create(input) / advance(id, toStatus)`
 - `vendors.list() / create(input)`
 - `ropa.list() / create(input)`
+- `webhooks.list() / create(input)`
 
 `export()` returns the raw CSV string; all other methods return parsed JSON. Any
-non-2xx response throws a `CookieMunchApiError { status, code?, message }`.
+non-2xx response throws a `CookieMunchApiError { status, code?, message }`. Error `code`
+values are catalogued in [`docs/api/error-codes.md`](../../docs/api/error-codes.md).
+
+## Verifying webhooks
+
+`verifyWebhookSignature(...)` validates an inbound webhook's `X-CookieMunch-Signature`
+(HMAC-SHA256 over `` `${timestamp}.${rawBody}` ``) and its freshness. It's the authoritative
+verifier — always matches the server. Fail-closed; returns a boolean.
+
+```ts
+import { verifyWebhookSignature } from '@cookiemunch/sdk';
+
+const ok = verifyWebhookSignature({
+  payload: rawBody,                          // exact request body bytes (a string)
+  signature: headers['x-cookiemunch-signature'],
+  timestamp: headers['x-cookiemunch-timestamp'],
+  secret: process.env.CM_WEBHOOK_SECRET!,    // the whsec_… shown once on create
+});
+```
+
+Full recipe (Express, edge/WebCrypto, replay protection): [`docs/api/webhook-signing.md`](../../docs/api/webhook-signing.md).
