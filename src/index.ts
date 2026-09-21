@@ -292,6 +292,23 @@ export interface WebhookSubscription {
   createdAt: number;
 }
 
+/**
+ * A page that refused to load the banner renderer. The site is live and configured, so
+ * every other signal looks healthy; this is the one that says nobody can be asked.
+ */
+export interface BlockedReport {
+  cbid: string;
+  /** Origin of the page the embed was running on. */
+  page: string;
+  /** The bundle URL that page refused. */
+  url: string;
+  reason: string;
+  firstSeen: number;
+  lastSeen: number;
+  /** How many times this page has reported. Repeats are counted, not stored. */
+  count: number;
+}
+
 /** A webhook delivery that failed every retry. Replay it by `id`. */
 export interface WebhookDeadLetter {
   id: string;
@@ -655,6 +672,12 @@ export interface CookieMunchClient {
     analyzeSession(cbid: string, input: SessionAnalysisInput): Promise<unknown>;
     /** Which banner design this site uses, or null when none is assigned. */
     banner(cbid: string): Promise<{ bannerId: string | null }>;
+    /**
+     * Pages where the embed could not load its banner renderer — the host page's CSP or
+     * Trusted Types policy refused it, so nobody on that page can be asked. An empty list
+     * is the healthy answer.
+     */
+    blocked(cbid: string): Promise<{ reports: BlockedReport[] }>;
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
     verify(cbid: string, method: 'dns' | 'meta' | 'file' | 'embed'): Promise<VerifyResult>;
     /** Exactly what to publish to prove control of the domain, for each verification method. */
@@ -986,6 +1009,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       setAdPersonalization: (cbid, input) => request('POST', `/sites/${enc(cbid)}/elements/ad-personalization`, input),
       analyzeSession: (cbid, input) => request('POST', `/sites/${enc(cbid)}/sentry`, input),
       banner: (cbid) => get(`/sites/${enc(cbid)}/banner`) as Promise<{ bannerId: string | null }>,
+      blocked: (cbid) => get(`/sites/${enc(cbid)}/blocked`) as Promise<{ reports: BlockedReport[] }>,
       snippet: (cbid, opts) =>
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
       verify: (cbid, method) => request('POST', `/sites/${enc(cbid)}/verify`, { method }) as Promise<VerifyResult>,
