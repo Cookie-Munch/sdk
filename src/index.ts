@@ -292,6 +292,27 @@ export interface WebhookSubscription {
   createdAt: number;
 }
 
+/** One cookie read from another CMP's export. */
+export interface ImportedCookie {
+  name: string;
+  domain: string;
+  /** Ours, or `unclassified` when their category did not map to one. */
+  category: 'necessary' | 'preferences' | 'statistics' | 'marketing' | 'unclassified';
+  /** What the previous vendor called it, kept for review. */
+  sourceCategory: string;
+  purpose: string;
+  provider: string;
+  expiry: string;
+}
+
+/** What a competitor's cookie-declaration export contained, in our vocabulary. */
+export interface ImportedDeclaration {
+  source: 'onetrust' | 'cookiebot' | 'cookieyes' | 'unknown';
+  cookies: ImportedCookie[];
+  /** Rows whose category could not be placed — review these first. */
+  unmapped: Array<{ name: string; category: string }>;
+}
+
 /**
  * A page that refused to load the banner renderer. The site is live and configured, so
  * every other signal looks healthy; this is the one that says nobody can be asked.
@@ -651,8 +672,27 @@ export interface SessionAnalysisInput {
   gpc?: boolean;
 }
 
+/** A language the banner already has copy for. */
+export interface SupportedLanguage {
+  /** BCP-47 tag, lowercase. Matched exactly, then by language prefix. */
+  code: string;
+  /** English name. */
+  name: string;
+  /** The language's name in itself. */
+  endonym: string;
+  /** Written right to left; the banner flips for these. */
+  rtl: boolean;
+  /** `bundled` ships in consent.js; `extended` ships in the renderer, fetched when a banner is first drawn. */
+  source: 'bundled' | 'extended';
+}
+
 export interface CookieMunchClient {
   me(): Promise<Identity>;
+  /**
+   * Languages the banner already speaks. Diff this against the locales your visitors
+   * use to see which ones you still need to write copy for in `banner.i18n`.
+   */
+  languages(): Promise<SupportedLanguage[]>;
   sites: {
     list(): Promise<Site[]>;
     create(input: SiteCreate): Promise<Site>;
@@ -678,6 +718,12 @@ export interface CookieMunchClient {
      * is the healthy answer.
      */
     blocked(cbid: string): Promise<{ reports: BlockedReport[] }>;
+    /**
+     * Read a cookie declaration exported from another CMP and translate its categories
+     * into ours. Nothing is applied: their vocabulary is not ours, and a cookie in the
+     * wrong category is a tag firing against a refusal, so the result is for review.
+     */
+    importDeclaration(cbid: string, data: string): Promise<ImportedDeclaration>;
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
     verify(cbid: string, method: 'dns' | 'meta' | 'file' | 'embed'): Promise<VerifyResult>;
     /** Exactly what to publish to prove control of the domain, for each verification method. */
@@ -986,6 +1032,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
 
   return {
     me: () => get('/me') as Promise<Identity>,
+    languages: () => get('/languages') as Promise<SupportedLanguage[]>,
     sites: {
       list: () => get('/sites') as Promise<Site[]>,
       create: (input) => request('POST', '/sites', input) as Promise<Site>,
@@ -1010,6 +1057,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       analyzeSession: (cbid, input) => request('POST', `/sites/${enc(cbid)}/sentry`, input),
       banner: (cbid) => get(`/sites/${enc(cbid)}/banner`) as Promise<{ bannerId: string | null }>,
       blocked: (cbid) => get(`/sites/${enc(cbid)}/blocked`) as Promise<{ reports: BlockedReport[] }>,
+      importDeclaration: (cbid, data) => request('POST', `/sites/${enc(cbid)}/import`, { data }) as Promise<ImportedDeclaration>,
       snippet: (cbid, opts) =>
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
       verify: (cbid, method) => request('POST', `/sites/${enc(cbid)}/verify`, { method }) as Promise<VerifyResult>,

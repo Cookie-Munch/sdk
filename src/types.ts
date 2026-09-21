@@ -69,13 +69,23 @@ export interface DsarRequest {
   status: DsarStatus;
   createdAt: number;
   dueAt: number;
+  /** Where the subject said they are, when the intake captured it. */
+  jurisdiction?: string;
   note?: string;
 }
 
 export interface DsarCreate {
   type: DsarType;
   subjectEmail: string;
+  /** Picks the statutory response window. */
   regulation: Regulation;
+  /**
+   * Where the subject says they are (ISO 3166 country or country-subdivision, e.g.
+   * `US-TX`). The response notice names the statute that governs there — without it a
+   * Texan is told their request was handled under a Virginia law, since every US state
+   * shares one `regulation` for the deadline.
+   */
+  jurisdiction?: string;
   note?: string;
 }
 
