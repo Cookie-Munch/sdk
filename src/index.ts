@@ -672,12 +672,50 @@ export interface SessionAnalysisInput {
   gpc?: boolean;
 }
 
+/**
+ * How to drive one system's rights API, as data. This is what makes a connection specific to
+ * a platform — Cookie Munch names none of them, so connecting a new system is a profile
+ * rather than a release. Paths are relative to `baseUrl`; placeholders are `{email}`,
+ * `{subject}`, `{operation}`, `{correlation}` and `{id}`.
+ */
+export interface ExecutorProfile {
+  /** How requests carry the credential. Defaults to `Authorization: Bearer {secret}`. */
+  auth?: { header: string; format: string };
+  /** Optional first step: turn the subject's email into the id this system uses. */
+  subjectLookup?: { method: 'GET' | 'POST'; path: string; body?: unknown; idPath: string };
+  /** How to open a request. An operation left out of `operations` is one this system does not run. */
+  open: {
+    method: 'POST' | 'PUT';
+    path: string;
+    body?: unknown;
+    operations: { export?: string; erase?: string };
+    idPath: string;
+    statusPath?: string;
+  };
+  /** How to ask how it is going. Polling is the truth; a webhook only prompts a check. */
+  poll: { method?: 'GET'; path: string; statusPath: string; resultPath?: string };
+  /** That system's status words → the three answers a sub-task can have. */
+  statuses: { running: string[]; done: string[]; failed: string[] };
+  idempotencyHeader?: string;
+  /** How that system signs its webhooks, if it sends any. */
+  webhook?: {
+    algorithm: 'hmac-sha256';
+    /** Must include `{body}`, or the signature proves nothing about it. */
+    signedPayload: string;
+    headers: { signature: string; timestamp?: string; id?: string };
+    encoding?: 'base64' | 'hex';
+    prefix?: string;
+    toleranceSeconds?: number;
+    timestampUnit?: 'seconds' | 'milliseconds' | 'auto';
+  };
+}
+
 /** A system connected to run part of a rights request. Credentials are never included. */
 export interface DsarExecutor {
   id: string;
-  kind: 'atlas';
-  /** The name it answers to in a fulfillment plan. */
+  /** The name it answers to in a fulfillment plan, e.g. `identity` or `crm`. */
   system: string;
+  profile: ExecutorProfile;
   baseUrl: string;
   keyPrefix: string;
   hasWebhookSecret: boolean;
@@ -687,15 +725,17 @@ export interface DsarExecutor {
 }
 
 export interface DsarExecutorInput {
-  kind: 'atlas';
+  /** The name this connection answers to in a plan, e.g. `identity` or `crm`. */
+  system: string;
   /** The system's public https origin. */
   baseUrl: string;
   /** Its API key. Stored encrypted; never returned. */
   secretKey: string;
   /** The signing secret of its webhook endpoint. Optional — polling closes tasks without it. */
   webhookSecret?: string;
-  system?: string;
   auto?: boolean;
+  /** How to drive it. */
+  profile: ExecutorProfile;
 }
 
 export interface DsarExecutorCreated extends DsarExecutor {
