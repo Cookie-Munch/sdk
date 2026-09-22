@@ -672,6 +672,44 @@ export interface SessionAnalysisInput {
   gpc?: boolean;
 }
 
+/** A system connected to run part of a rights request. Credentials are never included. */
+export interface DsarExecutor {
+  id: string;
+  kind: 'atlas';
+  /** The name it answers to in a fulfillment plan. */
+  system: string;
+  baseUrl: string;
+  keyPrefix: string;
+  hasWebhookSecret: boolean;
+  /** Open a sub-task automatically when a request reaches fulfilment. */
+  auto: boolean;
+  createdAt: number;
+}
+
+export interface DsarExecutorInput {
+  kind: 'atlas';
+  /** The system's public https origin. */
+  baseUrl: string;
+  /** Its API key. Stored encrypted; never returned. */
+  secretKey: string;
+  /** The signing secret of its webhook endpoint. Optional — polling closes tasks without it. */
+  webhookSecret?: string;
+  system?: string;
+  auto?: boolean;
+}
+
+export interface DsarExecutorCreated extends DsarExecutor {
+  /** Point the connected system's webhook endpoint here. */
+  webhookUrl: string;
+}
+
+export interface DsarTaskExport {
+  system: string;
+  ref: string;
+  /** The bundle as that system returned it. Not stored here. */
+  bundle: unknown;
+}
+
 /** A language the banner already has copy for. */
 export interface SupportedLanguage {
   /** BCP-47 tag, lowercase. Matched exactly, then by language prefix. */
@@ -887,6 +925,21 @@ export interface CookieMunchClient {
     pendingTasks(limit?: number): Promise<{ tasks: unknown[] }>;
     /** In-VPC agent: report an outcome. Only the outcome crosses the boundary. */
     reportTask(taskId: string, ok: boolean, error?: string): Promise<unknown>;
+    /**
+     * Systems you have connected that run part of a request themselves — an identity
+     * platform holding your users' accounts, for instance. The in-VPC agent covers the
+     * systems we cannot reach; these are the ones we can.
+     */
+    executors(): Promise<DsarExecutor[]>;
+    /**
+     * Connect one. The secret is stored encrypted and never returned; the response carries
+     * the URL to point that system's webhook at.
+     */
+    connectExecutor(input: DsarExecutorInput): Promise<DsarExecutorCreated>;
+    /** Disconnect a system; its open sub-tasks stop being driven. */
+    disconnectExecutor(id: string): Promise<void>;
+    /** The export bundle a connected system produced, fetched from it on demand. */
+    taskExport(requestId: string, taskId: string): Promise<DsarTaskExport>;
   };
   preferences: {
     list(): Promise<PreferenceItem[]>;
@@ -1197,6 +1250,12 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       status: (requestId) => get(`/dsar/${enc(requestId)}/fulfillment`),
       pendingTasks: (limit) => get(`/dsar/agent/tasks${qs({ limit })}`) as Promise<{ tasks: unknown[] }>,
       reportTask: (taskId, ok, error) => request('POST', `/dsar/agent/tasks/${enc(taskId)}/result`, { ok, ...(error !== undefined ? { error } : {}) }),
+      executors: () => get('/dsar/executors') as Promise<DsarExecutor[]>,
+      connectExecutor: (input) => request('POST', '/dsar/executors', input) as Promise<DsarExecutorCreated>,
+      disconnectExecutor: async (id) => {
+        await request('DELETE', `/dsar/executors/${enc(id)}`);
+      },
+      taskExport: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}/export`) as Promise<DsarTaskExport>,
     },
     preferences: {
       list: () => get('/preferences') as Promise<PreferenceItem[]>,
