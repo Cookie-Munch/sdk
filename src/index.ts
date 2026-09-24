@@ -820,6 +820,12 @@ export interface CookieMunchClient {
     setFlow(cbid: string, config: Record<string, unknown>): Promise<FlowOpResponse>;
   };
   consent: {
+    /**
+     * Verify the consent log's tamper-evident hash chain. Each record carries the hash of the
+     * one before it, so an edited, reordered or removed record answers `false`. This is the
+     * evidence behind the log: proof that what it says today is what it said when written.
+     */
+    verify(cbid: string): Promise<{ valid: boolean }>;
     stats(cbid: string, query?: RangeQuery): Promise<ConsentDay[]>;
     log(cbid: string, query?: LogQuery): Promise<ConsentLogRow[]>;
     export(cbid: string, query?: RangeQuery): Promise<string>;
@@ -1187,6 +1193,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       setFlow: (cbid, config) => request('PUT', `/sites/${enc(cbid)}/flow`, config) as Promise<FlowOpResponse>,
     },
     consent: {
+      verify: (cbid) => get(`/sites/${enc(cbid)}/consent/verify`) as Promise<{ valid: boolean }>,
       stats: (cbid, query) => get(`/sites/${enc(cbid)}/consent/stats${qs(toQuery(query))}`) as Promise<ConsentDay[]>,
       log: (cbid, query) => get(`/sites/${enc(cbid)}/consent/log${qs(toQuery(query))}`) as Promise<ConsentLogRow[]>,
       export: (cbid, query) => request('GET', `/sites/${enc(cbid)}/consent/export${qs(toQuery(query))}`, undefined, true) as Promise<string>,
