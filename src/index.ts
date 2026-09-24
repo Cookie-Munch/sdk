@@ -777,7 +777,10 @@ export interface CookieMunchClient {
     get(cbid: string): Promise<Site>;
     delete(cbid: string): Promise<void>;
     getConfig(cbid: string): Promise<SiteConfig>;
+    /** Replaces the whole config — a top-level field you omit reverts to its default. */
     putConfig(cbid: string, config: SiteConfig): Promise<SiteConfig>;
+    /** Changes some of the config — omitted fields keep their stored value. */
+    patchConfig(cbid: string, config: Partial<SiteConfig>): Promise<SiteConfig>;
     cookies(cbid: string): Promise<CookieDeclaration>;
     scan(cbid: string): Promise<ScanStatus>;
     scanStatus(cbid: string): Promise<ScanStatus>;
@@ -832,6 +835,11 @@ export interface CookieMunchClient {
   };
   dsar: {
     list(): Promise<DsarRequest[]>;
+    /**
+     * One request, in the same shape `list` returns — note that `create` answers with it
+     * wrapped as `{ request }`, so `create(...).request.id` is what you pass here.
+     */
+    get(id: string): Promise<DsarRequest>;
     create(input: DsarCreate): Promise<{ request: DsarRequest }>;
     advance(id: string, toStatus: DsarStatus): Promise<{ request: DsarRequest }>;
     /** The subject-facing response notice for a request, as plain text. */
@@ -976,6 +984,21 @@ export interface CookieMunchClient {
      * the URL to point that system's webhook at.
      */
     connectExecutor(input: DsarExecutorInput): Promise<DsarExecutorCreated>;
+    /**
+     * Change a connection in place. Only what you send changes, and the stored credential
+     * is kept unless you pass a new `secretKey` — so adding a field to a profile does not
+     * cost you the connection or its id.
+     */
+    updateExecutor(
+      id: string,
+      patch: {
+        profile?: unknown;
+        baseUrl?: string;
+        secretKey?: string;
+        webhookSecret?: string | null;
+        auto?: boolean;
+      },
+    ): Promise<DsarExecutor>;
     /** Disconnect a system; its open sub-tasks stop being driven. */
     disconnectExecutor(id: string): Promise<void>;
     /** The export bundle a connected system produced, fetched from it on demand. */
@@ -1135,6 +1158,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       },
       getConfig: (cbid) => get(`/sites/${enc(cbid)}/config`) as Promise<SiteConfig>,
       putConfig: (cbid, config) => request('PUT', `/sites/${enc(cbid)}/config`, config) as Promise<SiteConfig>,
+      patchConfig: (cbid, config) => request('PATCH', `/sites/${enc(cbid)}/config`, config) as Promise<SiteConfig>,
       cookies: (cbid) => get(`/sites/${enc(cbid)}/cookies`) as Promise<CookieDeclaration>,
       scan: (cbid) => request('POST', `/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
       scanStatus: (cbid) => get(`/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
@@ -1195,6 +1219,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     },
     dsar: {
       list: () => get('/dsar') as Promise<DsarRequest[]>,
+      get: (id) => get(`/dsar/${enc(id)}`) as Promise<DsarRequest>,
       create: (input) => request('POST', '/dsar', input) as Promise<{ request: DsarRequest }>,
       advance: (id, toStatus) => request('POST', `/dsar/${enc(id)}/advance`, { toStatus }) as Promise<{ request: DsarRequest }>,
       response: (id) => request('GET', `/dsar/${enc(id)}/response`, undefined, true) as Promise<string>,
@@ -1292,6 +1317,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       reportTask: (taskId, ok, error) => request('POST', `/dsar/agent/tasks/${enc(taskId)}/result`, { ok, ...(error !== undefined ? { error } : {}) }),
       executors: () => get('/dsar/executors') as Promise<DsarExecutor[]>,
       connectExecutor: (input) => request('POST', '/dsar/executors', input) as Promise<DsarExecutorCreated>,
+      updateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}`, patch) as Promise<DsarExecutor>,
       disconnectExecutor: async (id) => {
         await request('DELETE', `/dsar/executors/${enc(id)}`);
       },
