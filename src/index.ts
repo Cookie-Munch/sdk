@@ -771,6 +771,13 @@ export interface CookieMunchClient {
    * use to see which ones you still need to write copy for in `banner.i18n`.
    */
   languages(): Promise<SupportedLanguage[]>;
+  orgs: {
+    /**
+     * Create a sibling organisation owned by the same account — for a separate business of
+     * your own. Needs an unscoped key. Not reseller provisioning, which is for your customers.
+     */
+    create(name: string): Promise<{ org: { id: string; name: string; role: string } }>;
+  };
   sites: {
     list(): Promise<Site[]>;
     create(input: SiteCreate): Promise<Site>;
@@ -1155,6 +1162,9 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
   return {
     me: () => get('/me') as Promise<Identity>,
     languages: () => get('/languages') as Promise<SupportedLanguage[]>,
+    orgs: {
+      create: (name) => request('POST', '/orgs', { name }) as Promise<{ org: { id: string; name: string; role: string } }>,
+    },
     sites: {
       list: () => get('/sites') as Promise<Site[]>,
       create: (input) => request('POST', '/sites', input) as Promise<Site>,
