@@ -13,6 +13,7 @@ export * from './consent.js';
 export * from './webhooks.js';
 import type {
   Identity,
+  AccountOrgs,
   Site,
   SiteCreate,
   SiteConfig,
@@ -130,14 +131,82 @@ export interface InstallSnippet {
   api?: string;
   /** The site identifier. */
   cbid: string;
-  /** The active blocking mode. */
+  /** The blocking mode on the tag — the site's `blocking.mode` unless overridden. */
   blockingMode: string;
+  /** Where `blockingMode` came from: the site's config, or the `blockingMode` option. */
+  blockingModeSource?: 'config' | 'query';
+  /** The tag's data-culture, when it has one. */
+  culture?: string;
+  /** CSP sources this site needs, by directive, plus a paste-able `policy`. */
+  csp?: CspSources;
+  /** Present when an override disagrees with the stored config. */
+  warnings?: ConfigWarning[];
+}
+
+/** Content Security Policy sources the embed needs. */
+export interface CspSources {
+  script: string[];
+  connect: string[];
+  img: string[];
+  /** Always includes 'unsafe-inline' (the banner's shadow-root <style>), unless you use a nonce. */
+  style: string[];
+  font: string[];
+  frame: string[];
+  /** The same as one policy fragment. */
+  policy: string;
+}
+
+/** Something a config write did not store as sent. */
+export interface ConfigWarning {
+  field: string;
+  reason: string;
+}
+
+/** One leaf a config write would change. */
+export interface ConfigChange {
+  path: string;
+  from?: unknown;
+  to?: unknown;
+}
+
+/** What a config write would do (`?dryRun=1`) — nothing is saved. */
+export interface ConfigDryRun {
+  dryRun: true;
+  /** The config as it would be saved. */
+  config: SiteConfig;
+  /** Every leaf that would change. */
+  diff: ConfigChange[];
+  warnings?: ConfigWarning[];
+}
+
+/** Options for POST /v1/sites/:cbid/preview-token. All optional. */
+export interface PreviewTokenOptions {
+  /** Lifetime in seconds, 1..3600. Default 900. */
+  ttlSeconds?: number;
+  /** The page to preview. Default: the site's registered domain. */
+  url?: string;
+  /** Region to force: a country or subdivision code (`de`, `us-ca`) or `eu`. */
+  region?: string;
+  /** Language to force, as a BCP 47 tag (`de`, `pt-BR`). */
+  lang?: string;
+}
+
+/** A banner preview token, and the page URL that opens the preview. */
+export interface PreviewToken {
+  cbid: string;
+  token: string;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+  region?: string;
+  lang?: string;
+  /** The page with `cm_preview` / `cm_region` / `cm_lang` added. */
+  previewUrl?: string;
 }
 
 /** Options for the snippet endpoint. */
 export interface SnippetOptions {
-  /** Override the blocking mode ('auto' | 'manual' | 'checklist'). Default: 'auto'. */
-  blockingMode?: 'auto' | 'manual' | 'checklist';
+  /** Override the site's configured `blocking.mode`. Default: the config's. */
+  blockingMode?: 'auto' | 'manual';
   /** Language culture override, e.g. "en" or "fr". */
   culture?: string;
 }
@@ -681,8 +750,20 @@ export interface SessionAnalysisInput {
 export interface ExecutorProfile {
   /** How requests carry the credential. Defaults to `Authorization: Bearer {secret}`. */
   auth?: { header: string; format: string };
-  /** Optional first step: turn the subject's email into the id this system uses. */
-  subjectLookup?: { method: 'GET' | 'POST'; path: string; body?: unknown; idPath: string };
+  /**
+   * Optional first step: turn the subject's email into the id this system uses. `noMatch`
+   * names how the system says "no record of that person" in its body — a sentinel id is
+   * never read as a person when it is set.
+   */
+  subjectLookup?: {
+    method: 'GET' | 'POST';
+    path: string;
+    body?: unknown;
+    idPath: string;
+    noMatch?: { statusPath: string; values: string[] };
+  };
+  /** Response header carrying the system's version, recorded in the task log. Default `X-Version`. */
+  versionHeader?: string;
   /** How to open a request. An operation left out of `operations` is one this system does not run. */
   open: {
     method: 'POST' | 'PUT';
@@ -693,7 +774,16 @@ export interface ExecutorProfile {
     statusPath?: string;
   };
   /** How to ask how it is going. Polling is the truth; a webhook only prompts a check. */
-  poll: { method?: 'GET'; path: string; statusPath: string; resultPath?: string };
+  poll: {
+    method?: 'GET';
+    path: string;
+    statusPath: string;
+    resultPath?: string;
+    /** Whether `resultPath` holds the bundle itself or a URL to fetch it from. */
+    resultIs?: 'inline' | 'url';
+    /** Where a date the work is waiting for lives (an erasure in a grace period). */
+    scheduledPath?: string;
+  };
   /** That system's status words → the three answers a sub-task can have. */
   statuses: { running: string[]; done: string[]; failed: string[] };
   idempotencyHeader?: string;
@@ -743,6 +833,89 @@ export interface DsarExecutorCreated extends DsarExecutor {
   webhookUrl: string;
 }
 
+/** One entry in a fulfilment task's status history. */
+export interface DsarTaskEvent {
+  at: number;
+  kind: 'created' | 'changed' | 'version_changed';
+  status: 'pending' | 'running' | 'done' | 'failed';
+  detail?: string;
+  outcome?: DsarTaskOutcome;
+  scheduledFor?: number;
+  externalRef?: string;
+}
+
+/** What a task's answer means for the person. `exported` only once the export was fetched. */
+export type DsarTaskOutcome = 'located' | 'exported' | 'erased' | 'no_record' | 'done_without_artifact' | 'not_applicable';
+
+/** One request made to a connected system on a task's behalf, credentials removed. Kept 30 days. */
+export interface DsarTaskLogEntry {
+  id?: string;
+  system?: string;
+  step: 'lookup' | 'open' | 'poll' | 'export';
+  method: string;
+  path: string;
+  /** Absent when the system never answered. */
+  status?: number;
+  latencyMs: number;
+  requestHeaders?: Record<string, string>;
+  /** The first ~2 KB of what was sent. */
+  request?: string;
+  /** The first ~2 KB of what came back. */
+  response?: string;
+  error?: string;
+  /** The system's version header on this answer. */
+  version?: string;
+  at: number;
+}
+
+/** One fulfilment task with its history and its upstream request log. */
+export interface DsarTask {
+  id: string;
+  requestId: string;
+  system: string;
+  operation: FulfillmentOp;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  detail?: string;
+  outcome?: DsarTaskOutcome;
+  attempts: number;
+  executor?: string;
+  externalRef?: string;
+  scheduledFor?: number;
+  artifacts?: Array<{ kind: string; system: string; ref: string }>;
+  createdAt: number;
+  updatedAt: number;
+  events: DsarTaskEvent[];
+  log: DsarTaskLogEntry[];
+  /** Versions the system reported while working on this task, in order of change. */
+  upstreamVersions?: string[];
+  /** The system was redeployed while this task was in flight. */
+  versionChanged: boolean;
+}
+
+/** What testing a connection found. Nothing was filed. */
+export interface ExecutorTestResult {
+  system: string;
+  /** Did the lookup find the person; null when there is no lookup step or it failed. */
+  matched: boolean | null;
+  subject?: string;
+  operationWord?: string;
+  /** The open request a real request would send, when it was not sent. */
+  wouldSend?: { method: string; path: string; body: unknown };
+  /** One sentence: what a real request would have done. */
+  verdict: string;
+  ok: boolean;
+  /** Every upstream answer, as the system gave it (credentials removed). */
+  exchanges: DsarTaskLogEntry[];
+}
+
+export interface ExecutorTestInput {
+  email: string;
+  /** Default `locate`. */
+  operation?: 'locate' | 'export' | 'erase';
+  /** For `export` only: open a real export and poll it once. An erasure is never sent. */
+  open?: boolean;
+}
+
 export interface DsarTaskExport {
   system: string;
   ref: string;
@@ -773,10 +946,19 @@ export interface CookieMunchClient {
   languages(): Promise<SupportedLanguage[]>;
   orgs: {
     /**
+     * Every organisation on this key's account, each with its effective plan and where that
+     * comes from, plus the per-account org cap and the upgrade URL. Needs an unscoped key that
+     * is not locked to properties.
+     */
+    list(): Promise<AccountOrgs>;
+    /**
      * Create a sibling organisation owned by the same account — for a separate business of
      * your own. Needs an unscoped key. Not reseller provisioning, which is for your customers.
      */
-    create(name: string): Promise<{ org: { id: string; name: string; role: string } }>;
+    create(
+      name: string,
+      opts?: { mintKey?: boolean; keyScopes?: string[] },
+    ): Promise<{ org: { id: string; name: string; role: string }; apiKey?: string; keyError?: string }>;
   };
   sites: {
     list(): Promise<Site[]>;
@@ -788,6 +970,11 @@ export interface CookieMunchClient {
     putConfig(cbid: string, config: SiteConfig): Promise<SiteConfig>;
     /** Changes some of the config — omitted fields keep their stored value. */
     patchConfig(cbid: string, config: Partial<SiteConfig>): Promise<SiteConfig>;
+    /**
+     * Preview a config write without saving it: the merged result and a diff. `mode: 'put'`
+     * previews a replace (the diff then lists everything that would revert to its default).
+     */
+    dryRunConfig(cbid: string, config: Partial<SiteConfig>, opts?: { mode?: 'patch' | 'put' }): Promise<ConfigDryRun>;
     cookies(cbid: string): Promise<CookieDeclaration>;
     scan(cbid: string): Promise<ScanStatus>;
     scanStatus(cbid: string): Promise<ScanStatus>;
@@ -813,6 +1000,11 @@ export interface CookieMunchClient {
      */
     importDeclaration(cbid: string, data: string): Promise<ImportedDeclaration>;
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
+    /**
+     * Mint a short-lived signed token to see the banner as a visitor in a given region and
+     * language sees it — even from a headless browser, and without recording anything.
+     */
+    previewToken(cbid: string, opts?: PreviewTokenOptions): Promise<PreviewToken>;
     verify(cbid: string, method: 'dns' | 'meta' | 'file' | 'embed'): Promise<VerifyResult>;
     /** Exactly what to publish to prove control of the domain, for each verification method. */
     verifyChallenge(cbid: string): Promise<unknown>;
@@ -867,6 +1059,11 @@ export interface CookieMunchClient {
      * identity verification. Noted on the request. Requires dsar:write and consent:read.
      */
     export(id: string, cbid: string, stamp: string): Promise<DsarExportResult>;
+    /**
+     * Delete a TEST request (created with `test: true`), with its tasks and their log. A
+     * real request cannot be deleted (409 `not_a_test_request`); the deletion is audited.
+     */
+    delete(id: string): Promise<void>;
   };
   vendors: {
     list(): Promise<ScoredVendor[]>;
@@ -1016,6 +1213,16 @@ export interface CookieMunchClient {
     disconnectExecutor(id: string): Promise<void>;
     /** The export bundle a connected system produced, fetched from it on demand. */
     taskExport(requestId: string, taskId: string): Promise<DsarTaskExport>;
+    /**
+     * One task: its status history (`events`), every request made to a connected system on
+     * its behalf (`log`, redacted, 30 days) and whether that system's version changed mid-way.
+     */
+    task(requestId: string, taskId: string): Promise<DsarTask>;
+    /**
+     * Try a connection against one email without filing anything: runs the lookup, returns
+     * the raw (redacted) upstream answers and what a real request would have sent.
+     */
+    testExecutor(id: string, input: ExecutorTestInput): Promise<ExecutorTestResult>;
   };
   preferences: {
     list(): Promise<PreferenceItem[]>;
@@ -1163,7 +1370,13 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     me: () => get('/me') as Promise<Identity>,
     languages: () => get('/languages') as Promise<SupportedLanguage[]>,
     orgs: {
-      create: (name) => request('POST', '/orgs', { name }) as Promise<{ org: { id: string; name: string; role: string } }>,
+      list: () => get('/orgs') as Promise<AccountOrgs>,
+      create: (name, opts) =>
+        request('POST', '/orgs', { name, ...(opts ?? {}) }) as Promise<{
+          org: { id: string; name: string; role: string };
+          apiKey?: string;
+          keyError?: string;
+        }>,
     },
     sites: {
       list: () => get('/sites') as Promise<Site[]>,
@@ -1175,6 +1388,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       getConfig: (cbid) => get(`/sites/${enc(cbid)}/config`) as Promise<SiteConfig>,
       putConfig: (cbid, config) => request('PUT', `/sites/${enc(cbid)}/config`, config) as Promise<SiteConfig>,
       patchConfig: (cbid, config) => request('PATCH', `/sites/${enc(cbid)}/config`, config) as Promise<SiteConfig>,
+      dryRunConfig: (cbid, config, opts) =>
+        request(opts?.mode === 'put' ? 'PUT' : 'PATCH', `/sites/${enc(cbid)}/config?dryRun=1`, config) as Promise<ConfigDryRun>,
       cookies: (cbid) => get(`/sites/${enc(cbid)}/cookies`) as Promise<CookieDeclaration>,
       scan: (cbid) => request('POST', `/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
       scanStatus: (cbid) => get(`/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
@@ -1193,6 +1408,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       importDeclaration: (cbid, data) => request('POST', `/sites/${enc(cbid)}/import`, { data }) as Promise<ImportedDeclaration>,
       snippet: (cbid, opts) =>
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
+      previewToken: (cbid, o) => request('POST', `/sites/${enc(cbid)}/preview-token`, o ?? {}) as Promise<PreviewToken>,
       verify: (cbid, method) => request('POST', `/sites/${enc(cbid)}/verify`, { method }) as Promise<VerifyResult>,
       verifyChallenge: (cbid) => get(`/sites/${enc(cbid)}/verify/challenge`),
       createBulk: (sites) => request('POST', '/sites/bulk', { sites }) as Promise<{ results: BulkSiteResult[] }>,
@@ -1242,6 +1458,9 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       response: (id) => request('GET', `/dsar/${enc(id)}/response`, undefined, true) as Promise<string>,
       erase: (id, cbid, stamp) => request('POST', `/dsar/${enc(id)}/erase`, { cbid, stamp }) as Promise<DsarEraseResult>,
       export: (id, cbid, stamp) => request('POST', `/dsar/${enc(id)}/export`, { cbid, stamp }) as Promise<DsarExportResult>,
+      delete: async (id) => {
+        await request('DELETE', `/dsar/${enc(id)}`);
+      },
     },
     vendors: {
       list: () => get('/vendors') as Promise<ScoredVendor[]>,
@@ -1339,6 +1558,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         await request('DELETE', `/dsar/executors/${enc(id)}`);
       },
       taskExport: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}/export`) as Promise<DsarTaskExport>,
+      task: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}`) as Promise<DsarTask>,
+      testExecutor: (id, input) => request('POST', `/dsar/executors/${enc(id)}/test`, input) as Promise<ExecutorTestResult>,
     },
     preferences: {
       list: () => get('/preferences') as Promise<PreferenceItem[]>,

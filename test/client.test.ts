@@ -64,6 +64,22 @@ describe('auth + base url', () => {
   });
 });
 
+describe('orgs', () => {
+  it('list → GET /v1/orgs, returning the account orgs, cap and upgrade URL', async () => {
+    const body = {
+      orgs: [{ id: 'o1', name: 'A', plan: 'scale', planSource: 'org', subscribedPlan: 'scale', createdAt: 1, current: true }],
+      orgLimit: { max: null, plan: 'scale', used: 1 },
+      upgradeUrl: 'https://cookiemunch.net/account#account-plans',
+    };
+    const { fc, calls } = client([{ json: body }]);
+    const out = await fc.orgs.list();
+    expect(calls[0]!.method).toBe('GET');
+    expect(calls[0]!.url).toBe('https://api.example.com/v1/orgs');
+    expect(out.orgs[0]!.planSource).toBe('org');
+    expect(out.orgLimit.max).toBeNull();
+  });
+});
+
 describe('sites', () => {
   it('list', async () => {
     const { fc, calls } = client([{ json: [{ cbid: 'a', orgId: 'o', domain: 'a.com' }] }]);

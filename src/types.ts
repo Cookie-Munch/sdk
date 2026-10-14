@@ -6,8 +6,50 @@
 
 export interface Identity {
   orgId: string;
+  orgName?: string | null;
+  /** The EFFECTIVE plan — the one every feature gate and limit uses. */
   plan: string;
+  /**
+   * Why: `org` = this org's own subscription (or free, or a reseller-managed `child` plan);
+   * `account` = another org with the same owner pays for a higher plan that covers this one.
+   */
+  planSource: PlanSource;
+  /** What this org subscribes to itself (`free` = no subscription of its own). */
+  subscribedPlan: string;
+  /** Features the effective plan unlocks (e.g. `whiteLabel`, `tcf`, `sso`, `abTesting`). */
+  features: string[];
   keyPrefix: string;
+  /** null = full access. */
+  scopes?: string[] | null;
+  unscoped?: boolean;
+  propertyLocked?: boolean;
+  cbids?: string[];
+  reseller?: boolean;
+}
+
+export type PlanSource = 'org' | 'account';
+
+/** One organisation on an account (GET /v1/orgs, and the `org_limit` refusal). */
+export interface AccountOrg {
+  id: string;
+  name: string;
+  /** The effective plan. */
+  plan: string;
+  planSource: PlanSource;
+  subscribedPlan: string;
+  /** Present on a reseller-managed child organisation. */
+  parentOrgId?: string;
+  createdAt: number;
+  /** True for the organisation the calling key belongs to. */
+  current: boolean;
+}
+
+export interface AccountOrgs {
+  orgs: AccountOrg[];
+  /** The per-account org cap: `max` (null = unlimited), the `plan` that sets it, and `used`. */
+  orgLimit: { max: number | null; plan: string; used: number };
+  /** The dashboard billing page, where a plan is chosen. */
+  upgradeUrl: string;
 }
 
 export interface Site {
@@ -72,6 +114,8 @@ export interface DsarRequest {
   /** Where the subject said they are, when the intake captured it. */
   jurisdiction?: string;
   note?: string;
+  /** A test request: off the SLA board, labelled, and deletable with `dsar.delete`. */
+  test?: boolean;
 }
 
 export interface DsarCreate {
@@ -87,6 +131,15 @@ export interface DsarCreate {
    */
   jurisdiction?: string;
   note?: string;
+  /** The property this request belongs to; decides which connected systems answer it. */
+  cbid?: string;
+  /** The subject's consent-receipt id. */
+  stamp?: string;
+  /**
+   * Mark it as a test: left out of SLA metrics and the deadline board, labelled as a test,
+   * and deletable with `dsar.delete(id)`. For end-to-end checks of a rights flow.
+   */
+  test?: boolean;
 }
 
 export interface VendorInput {
