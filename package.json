@@ -19,14 +19,22 @@
       "require": "./dist/consent.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/alphajew420/cookiemunch.git",
-    "directory": "packages/sdk"
+    "url": "git+https://github.com/Cookie-Munch/sdk.git"
   },
   "publishConfig": {
     "access": "public"
   },
-  "scripts": { "build": "tsup", "test": "vitest run" }
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "homepage": "https://cookiemunch.net/docs",
+  "bugs": {
+    "url": "https://github.com/Cookie-Munch/sdk/issues"
+  }
 }

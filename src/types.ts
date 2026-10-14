@@ -114,7 +114,7 @@ export interface DsarRequest {
   /** Where the subject said they are, when the intake captured it. */
   jurisdiction?: string;
   note?: string;
-  /** A test request: off the SLA board, labelled, and deletable with `dsar.delete`. */
+  /** A test request: off the SLA board, labelled, and deletable with `dsar.delete`. A closed request can be marked one with `dsar.markTest`. */
   test?: boolean;
 }
 

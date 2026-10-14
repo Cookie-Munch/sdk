@@ -117,6 +117,20 @@ describe('sites', () => {
     expect(calls[1]!.method).toBe('PUT');
     expect(calls[1]!.body).toEqual({ banner: { layout: 'bottom' } });
   });
+
+  it('putConfig keep: unspecified, and a dry run of it (F-05)', async () => {
+    const { fc, calls } = client([{ json: { cbid: 'a' } }, { json: { dryRun: true } }, { json: { dryRun: true } }, { json: { cbid: 'a' } }]);
+    await fc.sites.putConfig('a', { defaultMode: 'opt-in' }, { keep: 'unspecified' });
+    expect(calls[0]!.method).toBe('PUT');
+    expect(calls[0]!.url).toBe('https://api.example.com/v1/sites/a/config?keep=unspecified');
+    await fc.sites.dryRunConfig('a', { defaultMode: 'opt-in' }, { mode: 'put', keep: 'unspecified' });
+    expect(calls[1]!.url).toBe('https://api.example.com/v1/sites/a/config?dryRun=1&keep=unspecified');
+    await fc.sites.dryRunConfig('a', { defaultMode: 'opt-in' });
+    expect(calls[2]!.url).toBe('https://api.example.com/v1/sites/a/config?dryRun=1');
+    // A null in a PATCH is sent as null: the server removes that key.
+    await fc.sites.patchConfig('a', { banner: { i18n: { es: null } } });
+    expect(calls[3]!.body).toEqual({ banner: { i18n: { es: null } } });
+  });
 });
 
 describe('consent', () => {

@@ -74,14 +74,56 @@ export interface CategorizedCookie {
   provider?: string;
   purpose?: string;
   expiry?: string;
+  /** Page URLs (multi-page scan) that set this cookie, earliest first. */
+  foundOnPages?: string[];
+  /** The site owner declared this cookie; it overrides the scan. */
+  declared?: boolean;
+  /** A declared `prefix*` wildcard row that no observed cookie matched yet. */
+  pattern?: boolean;
+  /** Why a person should look at it. Visitors see such cookies under "Unclassified". */
+  review?: 'unclassified' | 'category_disabled' | 'category_unknown';
 }
 
-/** A site's cookie declaration: the latest scan's categorized cookies. This is what
- *  GET /v1/sites/:cbid/cookies actually returns (a wrapper, not a bare array). */
+/** A site's cookie declaration: the latest scan and observed visits with the site's own
+ *  declarations on top. This is what GET /v1/sites/:cbid/cookies returns. */
 export interface CookieDeclaration {
-  /** Epoch-ms of the latest scan, or 0 if none. */
+  /** Epoch-ms of the latest scan or declaration change, or 0 if none. */
   updatedAt: number;
   cookies: CategorizedCookie[];
+  /** The site owner's declarations, as stored. */
+  declared?: DeclaredCookie[];
+}
+
+/** What the site owner says a cookie is (PUT /v1/sites/:cbid/cookies/:name). */
+export interface DeclaredCookieInput {
+  /** A standard category or one of the site's `categories.custom` ids. Not `unclassified`. */
+  category: string;
+  /** Shown to visitors. */
+  purpose: string;
+  provider?: string;
+  expiry?: string;
+  domain?: string;
+  /** Treat the name as a prefix wildcard (a trailing `*` does the same). */
+  pattern?: boolean;
+}
+
+/** A stored declaration. */
+export interface DeclaredCookie extends DeclaredCookieInput {
+  name: string;
+  updatedAt: number;
+}
+
+/** A warning about a write: e.g. the category is switched off for the site. */
+export interface DeclarationWarning {
+  field: string;
+  reason: string;
+}
+
+/** What an import with `apply` declared, on top of what it read. */
+export interface AppliedImport extends ImportedDeclaration {
+  applied: number;
+  skipped: Array<{ name: string; reason: string }>;
+  warnings?: DeclarationWarning[];
 }
 
 /** @deprecated The server returns {@link CookieDeclaration}; kept only for back-compat. */
@@ -167,6 +209,11 @@ export interface ConfigChange {
   path: string;
   from?: unknown;
   to?: unknown;
+}
+
+/** `PUT …/config` options. `keep: 'unspecified'` keeps the stored value of every top-level field the body omits. */
+export interface PutConfigOptions {
+  keep?: 'unspecified';
 }
 
 /** What a config write would do (`?dryRun=1`) — nothing is saved. */
@@ -966,15 +1013,25 @@ export interface CookieMunchClient {
     get(cbid: string): Promise<Site>;
     delete(cbid: string): Promise<void>;
     getConfig(cbid: string): Promise<SiteConfig>;
-    /** Replaces the whole config — a top-level field you omit reverts to its default. */
-    putConfig(cbid: string, config: SiteConfig): Promise<SiteConfig>;
-    /** Changes some of the config — omitted fields keep their stored value. */
+    /**
+     * Replaces the whole config — a top-level field you omit reverts to its default. With
+     * `{ keep: 'unspecified' }` (`?keep=unspecified`) an omitted top-level field keeps its
+     * stored value instead; each field you send is still replaced whole, and one sent as
+     * `null` reverts to its default.
+     */
+    putConfig(cbid: string, config: SiteConfig, opts?: PutConfigOptions): Promise<SiteConfig>;
+    /**
+     * Changes some of the config — a JSON Merge Patch (RFC 7386): omitted fields keep their
+     * stored value, nested objects merge, and `null` removes a field (it takes its default):
+     * `{ banner: { i18n: { es: null } } }` drops the Spanish override. Arrays replace whole.
+     */
     patchConfig(cbid: string, config: Partial<SiteConfig>): Promise<SiteConfig>;
     /**
      * Preview a config write without saving it: the merged result and a diff. `mode: 'put'`
-     * previews a replace (the diff then lists everything that would revert to its default).
+     * previews a replace (the diff then lists everything that would revert to its default);
+     * add `keep: 'unspecified'` to preview a replace that keeps omitted fields.
      */
-    dryRunConfig(cbid: string, config: Partial<SiteConfig>, opts?: { mode?: 'patch' | 'put' }): Promise<ConfigDryRun>;
+    dryRunConfig(cbid: string, config: Partial<SiteConfig>, opts?: { mode?: 'patch' | 'put' } & PutConfigOptions): Promise<ConfigDryRun>;
     cookies(cbid: string): Promise<CookieDeclaration>;
     scan(cbid: string): Promise<ScanStatus>;
     scanStatus(cbid: string): Promise<ScanStatus>;
@@ -999,6 +1056,26 @@ export interface CookieMunchClient {
      * wrong category is a tag firing against a refusal, so the result is for review.
      */
     importDeclaration(cbid: string, data: string): Promise<ImportedDeclaration>;
+    /**
+     * Import AND declare: every row that mapped to one of our categories and has a purpose
+     * is declared; the rest come back in `skipped`. Already-declared cookies are kept
+     * unless `overwrite`.
+     */
+    applyImport(cbid: string, data: string, opts?: { overwrite?: boolean }): Promise<AppliedImport>;
+    /**
+     * Declare what one cookie is. Overrides scanned, observed and database classification
+     * in the API, the preference modal and `data-cc="declaration"`. A name ending in `*`
+     * declares a prefix wildcard.
+     */
+    declareCookie(cbid: string, name: string, input: DeclaredCookieInput): Promise<{ cookie: DeclaredCookie; warnings?: DeclarationWarning[] }>;
+    /** Remove a declaration; the scanned classification applies again. */
+    undeclareCookie(cbid: string, name: string): Promise<void>;
+    /** Declare many at once (all-or-nothing). `replace` also removes declarations not listed. */
+    declareCookies(
+      cbid: string,
+      cookies: Array<DeclaredCookieInput & { name: string }>,
+      opts?: { replace?: boolean },
+    ): Promise<{ declared: DeclaredCookie[]; saved: number; removed: number; warnings?: DeclarationWarning[] }>;
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
     /**
      * Mint a short-lived signed token to see the banner as a visitor in a given region and
@@ -1064,6 +1141,12 @@ export interface CookieMunchClient {
      * real request cannot be deleted (409 `not_a_test_request`); the deletion is audited.
      */
     delete(id: string): Promise<void>;
+    /**
+     * Mark a CLOSED request (completed or rejected) as a test, after the fact — for trials
+     * filed before `test` existed. An open one is refused (409 `request_not_closed`). Audited
+     * as `dsar.marked_test`; afterwards `delete` works on it. `changed` is false on a repeat.
+     */
+    markTest(id: string): Promise<{ request: DsarRequest; changed: boolean }>;
   };
   vendors: {
     list(): Promise<ScoredVendor[]>;
@@ -1386,10 +1469,15 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         await request('DELETE', `/sites/${enc(cbid)}`);
       },
       getConfig: (cbid) => get(`/sites/${enc(cbid)}/config`) as Promise<SiteConfig>,
-      putConfig: (cbid, config) => request('PUT', `/sites/${enc(cbid)}/config`, config) as Promise<SiteConfig>,
+      putConfig: (cbid, config, opts) =>
+        request('PUT', `/sites/${enc(cbid)}/config${qs({ keep: opts?.keep })}`, config) as Promise<SiteConfig>,
       patchConfig: (cbid, config) => request('PATCH', `/sites/${enc(cbid)}/config`, config) as Promise<SiteConfig>,
       dryRunConfig: (cbid, config, opts) =>
-        request(opts?.mode === 'put' ? 'PUT' : 'PATCH', `/sites/${enc(cbid)}/config?dryRun=1`, config) as Promise<ConfigDryRun>,
+        request(
+          opts?.mode === 'put' ? 'PUT' : 'PATCH',
+          `/sites/${enc(cbid)}/config${qs({ dryRun: 1, keep: opts?.mode === 'put' ? opts.keep : undefined })}`,
+          config,
+        ) as Promise<ConfigDryRun>,
       cookies: (cbid) => get(`/sites/${enc(cbid)}/cookies`) as Promise<CookieDeclaration>,
       scan: (cbid) => request('POST', `/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
       scanStatus: (cbid) => get(`/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
@@ -1406,6 +1494,20 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       banner: (cbid) => get(`/sites/${enc(cbid)}/banner`) as Promise<{ bannerId: string | null }>,
       blocked: (cbid) => get(`/sites/${enc(cbid)}/blocked`) as Promise<{ reports: BlockedReport[] }>,
       importDeclaration: (cbid, data) => request('POST', `/sites/${enc(cbid)}/import`, { data }) as Promise<ImportedDeclaration>,
+      applyImport: (cbid, data, o) =>
+        request('POST', `/sites/${enc(cbid)}/import${qs({ apply: '1', overwrite: o?.overwrite ? '1' : undefined })}`, { data }) as Promise<AppliedImport>,
+      declareCookie: (cbid, name, input) =>
+        request('PUT', `/sites/${enc(cbid)}/cookies/${enc(name)}`, input) as Promise<{ cookie: DeclaredCookie; warnings?: DeclarationWarning[] }>,
+      undeclareCookie: async (cbid, name) => {
+        await request('DELETE', `/sites/${enc(cbid)}/cookies/${enc(name)}`);
+      },
+      declareCookies: (cbid, cookies, o) =>
+        request('PUT', `/sites/${enc(cbid)}/cookies`, { cookies, ...(o?.replace ? { replace: true } : {}) }) as Promise<{
+          declared: DeclaredCookie[];
+          saved: number;
+          removed: number;
+          warnings?: DeclarationWarning[];
+        }>,
       snippet: (cbid, opts) =>
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
       previewToken: (cbid, o) => request('POST', `/sites/${enc(cbid)}/preview-token`, o ?? {}) as Promise<PreviewToken>,
@@ -1461,6 +1563,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       delete: async (id) => {
         await request('DELETE', `/dsar/${enc(id)}`);
       },
+      markTest: (id) => request('POST', `/dsar/${enc(id)}/mark-test`) as Promise<{ request: DsarRequest; changed: boolean }>,
     },
     vendors: {
       list: () => get('/vendors') as Promise<ScoredVendor[]>,
