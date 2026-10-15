@@ -76,6 +76,11 @@ export interface CategorizedCookie {
   domain?: string;
   provider?: string;
   purpose?: string;
+  /**
+   * The purpose by language (lowercase BCP-47 tag). On a declared row, the owner's; on a
+   * row the cookie database classified, the database's (empty: none yet).
+   */
+  purposes?: Record<string, string>;
   expiry?: string;
   /** Page URLs (multi-page scan) that set this cookie, earliest first. */
   foundOnPages?: string[];
@@ -101,8 +106,14 @@ export interface CookieDeclaration {
 export interface DeclaredCookieInput {
   /** A standard category or one of the site's `categories.custom` ids. Not `unclassified`. */
   category: string;
-  /** Shown to visitors. */
+  /** Shown to visitors, and the fallback for any language `purposes` lacks. */
   purpose: string;
+  /**
+   * The purpose in other languages: `{ es: '…', 'pt-BR': '…' }` (BCP-47 language or
+   * language-region tags, stored lowercased; ≤50 languages, ≤1000 characters each).
+   * The banner, `data-cc="declaration"` and /cookie-declaration.js draw the visitor's.
+   */
+  purposes?: Record<string, string> | null;
   provider?: string;
   expiry?: string;
   domain?: string;
@@ -114,6 +125,21 @@ export interface DeclaredCookieInput {
 export interface DeclaredCookie extends DeclaredCookieInput {
   name: string;
   updatedAt: number;
+}
+
+/** What a declaration write would change (`dryRun`). */
+export interface DeclarationDiff {
+  added: DeclaredCookie[];
+  removed: DeclaredCookie[];
+  changed: Array<{ name: string; before: DeclaredCookie; after: DeclaredCookie }>;
+}
+
+/** The answer to a `dryRun` declaration write: nothing was stored. */
+export interface DeclarationDryRun {
+  dryRun: true;
+  /** Every declaration the site would have. */
+  declared: DeclaredCookie[];
+  diff: DeclarationDiff;
 }
 
 /** A warning about a write: e.g. the category is switched off for the site. */
@@ -1178,6 +1204,50 @@ export interface DsarExecutor {
   /** Open a sub-task automatically when a request reaches fulfilment. */
   auto: boolean;
   createdAt: number;
+  /** Where that system should send its completion webhooks. On every connection, secret or not. */
+  webhookUrl: string;
+}
+
+/** What a connection write would do (`?dryRun=1`). Nothing was stored. */
+export interface DsarExecutorDryRun {
+  dryRun: true;
+  /** The connection as it would be, credentials excluded. A create has no `id` or `webhookUrl` yet. */
+  executor: Partial<DsarExecutor> & Record<string, unknown>;
+  /** Each field that would change. */
+  diff: ConfigChange[];
+  warnings?: Array<{ field: string; reason: string }>;
+}
+
+/** Where a webhook check stopped. */
+export type WebhookStage = 'configuration' | 'headers' | 'timestamp' | 'prefix' | 'signature';
+
+/** Which key a verified delivery matched: a `whsec_` secret's base64-decoded remainder, or the secret as typed. */
+export type WebhookKeyForm = 'decoded' | 'raw';
+
+/** Whether a supplied delivery verified (`stage` and `reason` are null when it did). */
+export interface ExecutorWebhookTestResult {
+  verified: boolean;
+  stage: WebhookStage | null;
+  reason: string | null;
+  /** Which key form matched; null when refused. */
+  keyForm: WebhookKeyForm | null;
+}
+
+/** One delivery to a connection's webhook. Never the secret, the signature or the body. */
+export interface ExecutorWebhookDelivery {
+  id: string;
+  executorId: string;
+  at: number;
+  verified: boolean;
+  stage: WebhookStage | null;
+  reason: string | null;
+  /** The HTTP status we answered with. */
+  status: number;
+  /** The first 16 hex characters of SHA-256 over the raw body. */
+  bodySha256: string;
+  bodyBytes: number;
+  /** Which key form matched; null when refused (or logged before this was kept). Never the key. */
+  keyForm: WebhookKeyForm | null;
 }
 
 export interface DsarExecutorInput {
@@ -1187,16 +1257,26 @@ export interface DsarExecutorInput {
   baseUrl: string;
   /** Its API key. Stored encrypted; never returned. */
   secretKey: string;
-  /** The signing secret of its webhook endpoint. Optional — polling closes tasks without it. */
+  /**
+   * The signing secret of its webhook endpoint. Optional — polling closes tasks without it.
+   * A `whsec_<base64>` secret verifies a delivery signed with either the base64-decoded bytes
+   * or the literal string; anything else only with its UTF-8 bytes.
+   */
   webhookSecret?: string;
   auto?: boolean;
   /** How to drive it. */
   profile: ExecutorProfile;
 }
 
-export interface DsarExecutorCreated extends DsarExecutor {
-  /** Point the connected system's webhook endpoint here. */
-  webhookUrl: string;
+export type DsarExecutorCreated = DsarExecutor;
+
+/** The fields `updateExecutor` may change. */
+export interface DsarExecutorPatch {
+  profile?: unknown;
+  baseUrl?: string;
+  secretKey?: string;
+  webhookSecret?: string | null;
+  auto?: boolean;
 }
 
 /** One entry in a fulfilment task's status history. */
@@ -1390,17 +1470,28 @@ export interface CookieMunchClient {
     /**
      * Declare what one cookie is. Overrides scanned, observed and database classification
      * in the API, the preference modal and `data-cc="declaration"`. A name ending in `*`
-     * declares a prefix wildcard.
+     * declares a prefix wildcard. `dryRun` validates and returns the would-be list and a
+     * diff without storing anything.
      */
-    declareCookie(cbid: string, name: string, input: DeclaredCookieInput): Promise<{ cookie: DeclaredCookie; warnings?: DeclarationWarning[] }>;
+    declareCookie(
+      cbid: string,
+      name: string,
+      input: DeclaredCookieInput,
+      opts?: { dryRun?: boolean },
+    ): Promise<{ cookie: DeclaredCookie; warnings?: DeclarationWarning[] } & Partial<DeclarationDryRun>>;
     /** Remove a declaration; the scanned classification applies again. */
     undeclareCookie(cbid: string, name: string): Promise<void>;
-    /** Declare many at once (all-or-nothing). `replace` also removes declarations not listed. */
+    /** What removing a declaration would leave; nothing is removed. */
+    undeclareCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<DeclarationDryRun>;
+    /**
+     * Declare many at once (all-or-nothing). `replace` also removes declarations not listed;
+     * `dryRun` answers with what would be stored and a diff, storing nothing.
+     */
     declareCookies(
       cbid: string,
       cookies: Array<DeclaredCookieInput & { name: string }>,
-      opts?: { replace?: boolean },
-    ): Promise<{ declared: DeclaredCookie[]; saved: number; removed: number; warnings?: DeclarationWarning[] }>;
+      opts?: { replace?: boolean; dryRun?: boolean },
+    ): Promise<{ declared: DeclaredCookie[]; saved: number; removed: number; warnings?: DeclarationWarning[]; dryRun?: true; diff?: DeclarationDiff }>;
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
     /**
      * Mint a short-lived signed token to see the banner as a visitor in a given region and
@@ -1637,16 +1728,18 @@ export interface CookieMunchClient {
      * is kept unless you pass a new `secretKey` — so adding a field to a profile does not
      * cost you the connection or its id.
      */
-    updateExecutor(
-      id: string,
-      patch: {
-        profile?: unknown;
-        baseUrl?: string;
-        secretKey?: string;
-        webhookSecret?: string | null;
-        auto?: boolean;
-      },
-    ): Promise<DsarExecutor>;
+    updateExecutor(id: string, patch: DsarExecutorPatch): Promise<DsarExecutor>;
+    /** What `connectExecutor` would create, validated in full; nothing is stored (`?dryRun=1`). */
+    dryRunConnectExecutor(input: DsarExecutorInput): Promise<DsarExecutorDryRun>;
+    /** What `updateExecutor` would change, with a diff; the stored connection is untouched (`?dryRun=1`). */
+    dryRunUpdateExecutor(id: string, patch: DsarExecutorPatch): Promise<DsarExecutorDryRun>;
+    /**
+     * Would this webhook delivery verify? Runs the receiver's exact check on headers and a raw
+     * body you supply, acts on nothing, and names the stage that failed.
+     */
+    testExecutorWebhook(id: string, delivery: { headers: Record<string, string>; body: string }): Promise<ExecutorWebhookTestResult>;
+    /** The last 50 deliveries to a connection's webhook, newest first, each with its reason. */
+    executorWebhookDeliveries(id: string): Promise<ExecutorWebhookDelivery[]>;
     /** Disconnect a system; its open sub-tasks stop being driven. */
     disconnectExecutor(id: string): Promise<void>;
     /** The export bundle a connected system produced, fetched from it on demand. */
@@ -1912,17 +2005,22 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       importDeclaration: (cbid, data) => request('POST', `/sites/${enc(cbid)}/import`, { data }) as Promise<ImportedDeclaration>,
       applyImport: (cbid, data, o) =>
         request('POST', `/sites/${enc(cbid)}/import${qs({ apply: '1', overwrite: o?.overwrite ? '1' : undefined })}`, { data }) as Promise<AppliedImport>,
-      declareCookie: (cbid, name, input) =>
-        request('PUT', `/sites/${enc(cbid)}/cookies/${enc(name)}`, input) as Promise<{ cookie: DeclaredCookie; warnings?: DeclarationWarning[] }>,
-      undeclareCookie: async (cbid, name) => {
-        await request('DELETE', `/sites/${enc(cbid)}/cookies/${enc(name)}`);
-      },
+      declareCookie: (cbid, name, input, o) =>
+        request('PUT', `/sites/${enc(cbid)}/cookies/${enc(name)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<
+          { cookie: DeclaredCookie; warnings?: DeclarationWarning[] } & Partial<DeclarationDryRun>
+        >,
+      undeclareCookie: (async (cbid: string, name: string, o?: { dryRun?: boolean }) => {
+        const out = await request('DELETE', `/sites/${enc(cbid)}/cookies/${enc(name)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`);
+        return o?.dryRun ? (out as DeclarationDryRun) : undefined;
+      }) as CookieMunchClient['sites']['undeclareCookie'],
       declareCookies: (cbid, cookies, o) =>
-        request('PUT', `/sites/${enc(cbid)}/cookies`, { cookies, ...(o?.replace ? { replace: true } : {}) }) as Promise<{
+        request('PUT', `/sites/${enc(cbid)}/cookies${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, { cookies, ...(o?.replace ? { replace: true } : {}) }) as Promise<{
           declared: DeclaredCookie[];
           saved: number;
           removed: number;
           warnings?: DeclarationWarning[];
+          dryRun?: true;
+          diff?: DeclarationDiff;
         }>,
       snippet: (cbid, opts) =>
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
@@ -2091,6 +2189,11 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       executors: () => get('/dsar/executors') as Promise<DsarExecutor[]>,
       connectExecutor: (input) => request('POST', '/dsar/executors', input) as Promise<DsarExecutorCreated>,
       updateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}`, patch) as Promise<DsarExecutor>,
+      dryRunConnectExecutor: (input) => request('POST', '/dsar/executors?dryRun=1', input) as Promise<DsarExecutorDryRun>,
+      dryRunUpdateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}?dryRun=1`, patch) as Promise<DsarExecutorDryRun>,
+      testExecutorWebhook: (id, delivery) =>
+        request('POST', `/dsar/executors/${enc(id)}/webhook/test`, delivery) as Promise<ExecutorWebhookTestResult>,
+      executorWebhookDeliveries: (id) => get(`/dsar/executors/${enc(id)}/webhook/deliveries`) as Promise<ExecutorWebhookDelivery[]>,
       disconnectExecutor: async (id) => {
         await request('DELETE', `/dsar/executors/${enc(id)}`);
       },

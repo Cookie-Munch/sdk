@@ -86,3 +86,22 @@ describe('regulatory', () => {
     expect(calls[0]!.url).not.toContain('days=');
   });
 });
+
+describe('fulfillment: executor webhooks and dry runs', () => {
+  it('tests a delivery, reads the delivery log, and dry-runs a connect and an edit', async () => {
+    const { fc, calls } = client([{ verified: true, stage: null, reason: null }, [], { dryRun: true }, { dryRun: true }]);
+    const delivery = { headers: { 'x-sig': 'v1,abc' }, body: '{"a":1}' };
+    expect(await fc.fulfillment.testExecutorWebhook('ex 1', delivery)).toEqual({ verified: true, stage: null, reason: null });
+    await fc.fulfillment.executorWebhookDeliveries('ex 1');
+    await fc.fulfillment.dryRunConnectExecutor({ system: 'crm', baseUrl: 'https://crm.example', secretKey: 'sk_12345678', profile: {} as never });
+    await fc.fulfillment.dryRunUpdateExecutor('ex 1', { auto: false });
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'POST https://api.example.com/v1/dsar/executors/ex%201/webhook/test',
+      'GET https://api.example.com/v1/dsar/executors/ex%201/webhook/deliveries',
+      'POST https://api.example.com/v1/dsar/executors?dryRun=1',
+      'PATCH https://api.example.com/v1/dsar/executors/ex%201?dryRun=1',
+    ]);
+    expect(calls[0]!.body).toEqual(delivery);
+    expect(calls[3]!.body).toEqual({ auto: false });
+  });
+});
