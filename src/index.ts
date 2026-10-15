@@ -88,8 +88,29 @@ export interface CategorizedCookie {
   declared?: boolean;
   /** A declared `prefix*` wildcard row that no observed cookie matched yet. */
   pattern?: boolean;
-  /** Why a person should look at it. Visitors see such cookies under "Unclassified". */
-  review?: 'unclassified' | 'category_disabled' | 'category_unknown';
+  /**
+   * Why a person should look at it. Visitors see unclassified and category ones under
+   * "Unclassified"; `retired_but_seen` = retired, but a crawl or a visit saw it since, so the
+   * site still sets it and it is listed again.
+   */
+  review?: 'unclassified' | 'category_disabled' | 'category_unknown' | 'retired_but_seen';
+  /** Epoch-ms a crawl or a real visit last saw it. Absent on older rows. */
+  lastSeenAt?: number;
+  /** Owner views only: the site owner retired this cookie (see `sites.retireCookie`). */
+  retired?: { at: number; renamedTo?: string; note?: string; by?: string; pattern?: string };
+}
+
+/** A cookie the site owner retired: the site renamed or stopped setting it. */
+export interface RetiredCookie {
+  /** Exact name, or a `prefix*` wildcard. */
+  name: string;
+  /** Epoch-ms it was retired; anything seen after this brings it back. */
+  at: number;
+  renamedTo?: string;
+  note?: string;
+  /** `apikey:<prefix>` or a dashboard user id. */
+  by?: string;
+  pattern?: boolean;
 }
 
 /** A site's cookie declaration: the latest scan and observed visits with the site's own
@@ -100,6 +121,8 @@ export interface CookieDeclaration {
   cookies: CategorizedCookie[];
   /** The site owner's declarations, as stored. */
   declared?: DeclaredCookie[];
+  /** The site's retirements, as stored (owner views only). */
+  retired?: RetiredCookie[];
 }
 
 /** What the site owner says a cookie is (PUT /v1/sites/:cbid/cookies/:name). */
@@ -168,11 +191,24 @@ export interface SiteCookie {
 
 /** Cookie-scan status, from GET /v1/sites/:cbid/scan. */
 export interface ScanStatus {
+  /** `scanning` while the last scan is queued or crawling. Kept for older clients; read `state`. */
   status: 'idle' | 'scanning';
   /** Epoch-ms of the last completed scan, or null. */
   lastScannedAt: number | null;
   /** What the last scan saw of the live banner's Accept all / Reject all. Absent until measured. */
   buttonParity?: ButtonParityScan;
+  /** Where the last scan is. Absent when the site was never scanned. */
+  state?: 'queued' | 'scanning' | 'done' | 'failed';
+  scanId?: string;
+  startedAt?: number;
+  finishedAt?: number;
+  durationMs?: number;
+  /** Cookies this crawl saw (the stored list also keeps earlier finds: `keptFromEarlier`). */
+  cookieCount?: number;
+  keptFromEarlier?: number;
+  pagesVisited?: number;
+  /** Why it failed. */
+  error?: string;
 }
 
 /** Consent-button parity of the banner a real browser saw on the site (see ScanStatus). */
@@ -339,10 +375,23 @@ export interface ButtonParityLint {
   suggestedReject: SuggestedRejectStyle[];
 }
 
+/**
+ * Scrollbars on the surfaces Cookie Munch renders — the same shape on the banner theme (`theme.scrollbar`)
+ * and the rights-page theme. Colours are #hex, rgb() or hsl(); width is clamped to 4–16, radius to 0–999.
+ */
+export interface ScrollbarTheme {
+  style: 'themed' | 'thin' | 'native' | 'hidden';
+  thumb?: string;
+  thumbHover?: string;
+  track?: string;
+  width?: number;
+  radius?: number;
+}
+
 /** The hosted rights page document. See docs/rights-page for each section type's props. */
 export interface RightsPageDocument {
   v: 1;
-  theme: { preset: 'brand' | 'light' | 'dark' | 'custom'; width: 'narrow' | 'normal' | 'wide' | 'full'; density: 'compact' | 'comfortable' | 'spacious'; colorScheme: 'light' | 'dark' | 'auto'; [k: string]: unknown };
+  theme: { preset: 'brand' | 'light' | 'dark' | 'custom'; width: 'narrow' | 'normal' | 'wide' | 'full'; density: 'compact' | 'comfortable' | 'spacious'; colorScheme: 'light' | 'dark' | 'auto'; scrollbar?: ScrollbarTheme; [k: string]: unknown };
   sections: Array<{ id: string; type: string; props: Record<string, unknown>; hidden?: { phone?: boolean; desktop?: boolean }; style?: Record<string, unknown> }>;
   form: { requestTypes: Array<Record<string, unknown>>; fields: Array<Record<string, unknown>>; jurisdiction: 'auto' | 'ask' | 'hidden'; consentIdField: 'hidden' | 'optional' | 'required'; success: { title?: string; body?: string }; submitLabel?: string };
   i18n: { defaultLocale: string; autoDetect: boolean; overrides: Record<string, unknown> };
@@ -1439,8 +1488,18 @@ export interface CookieMunchClient {
      */
     lintConfig(cbid: string, config: Partial<SiteConfig>, opts?: { replace?: boolean }): Promise<ButtonParityLint>;
     cookies(cbid: string): Promise<CookieDeclaration>;
-    scan(cbid: string): Promise<ScanStatus>;
-    scanStatus(cbid: string): Promise<ScanStatus>;
+    /**
+     * Start a cookie crawl. Answers at once with `scanId` and `state: 'queued'`; `wait`
+     * (seconds, ≤60) holds the request until the scan is done or failed.
+     */
+    scan(cbid: string, opts?: { wait?: number }): Promise<ScanStatus>;
+    /** The last scan's state. `wait` (seconds, ≤60) holds the request until a running scan settles. */
+    scanStatus(cbid: string, opts?: { wait?: number }): Promise<ScanStatus>;
+    /**
+     * Resolve once the site's scan is done or failed (read `state` and `error`), long-polling
+     * the server. At `timeoutMs` (default 120 000) it resolves with the still-running state.
+     */
+    waitForScan(cbid: string, opts?: { timeoutMs?: number }): Promise<ScanStatus>;
     ab(cbid: string): Promise<AbResult[]>;
     /** Generate the site's privacy and cookie policy, as Markdown. */
     policy(cbid: string, opts?: PolicyOptions): Promise<string>;
@@ -1480,6 +1539,22 @@ export interface CookieMunchClient {
       input: DeclaredCookieInput,
       opts?: { dryRun?: boolean },
     ): Promise<{ cookie: DeclaredCookie; warnings?: DeclarationWarning[] } & Partial<DeclarationDryRun>>;
+    /**
+     * Retire a cookie the site renamed or stopped setting: it leaves the banner's list,
+     * `data-cc="declaration"` and the public feed, and stays listed for you with `retired`.
+     * A name ending in `*` retires every cookie with that prefix. If a crawl or a visit sees
+     * it again afterwards it is listed again, flagged `review: 'retired_but_seen'`.
+     */
+    retireCookie(
+      cbid: string,
+      name: string,
+      input?: { renamedTo?: string; note?: string },
+      opts?: { dryRun?: boolean },
+    ): Promise<{ cookie: RetiredCookie; matched: string[]; dryRun?: true; retired?: RetiredCookie[] }>;
+    /** Un-retire a cookie: it is listed again everywhere. */
+    unretireCookie(cbid: string, name: string): Promise<void>;
+    /** What un-retiring would leave; nothing is removed. */
+    unretireCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<{ dryRun: true; retired: RetiredCookie[] }>;
     /** Remove a declaration; the scanned classification applies again. */
     undeclareCookie(cbid: string, name: string): Promise<void>;
     /** What removing a declaration would leave; nothing is removed. */
@@ -1989,8 +2064,21 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       lintConfig: (cbid, config, opts) =>
         request('POST', `/sites/${enc(cbid)}/config/lint${qs({ replace: opts?.replace ? 1 : undefined })}`, config) as Promise<ButtonParityLint>,
       cookies: (cbid) => get(`/sites/${enc(cbid)}/cookies`) as Promise<CookieDeclaration>,
-      scan: (cbid) => request('POST', `/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
-      scanStatus: (cbid) => get(`/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
+      scan: (cbid, o) => request('POST', `/sites/${enc(cbid)}/scan${qs({ wait: o?.wait })}`) as Promise<ScanStatus>,
+      scanStatus: (cbid, o) => get(`/sites/${enc(cbid)}/scan${qs({ wait: o?.wait })}`) as Promise<ScanStatus>,
+      waitForScan: async (cbid, o) => {
+        const until = Date.now() + (o?.timeoutMs ?? 120_000);
+        for (;;) {
+          const left = until - Date.now();
+          const asked = Math.max(0, Math.min(60_000, left));
+          const t0 = Date.now();
+          const s = (await get(`/sites/${enc(cbid)}/scan${qs({ wait: asked / 1000 })}`)) as ScanStatus;
+          if (s.status !== 'scanning' || until - Date.now() <= 0) return s;
+          // A server that answered sooner than asked (one without long-polling) is not hammered.
+          const early = Math.min(1000, until - Date.now()) - (Date.now() - t0);
+          if (early > 0) await new Promise((r) => setTimeout(r, early));
+        }
+      },
       ab: (cbid) => get(`/sites/${enc(cbid)}/ab`) as Promise<AbResult[]>,
       policy: (cbid, o) =>
         request(
@@ -2010,6 +2098,17 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         request('PUT', `/sites/${enc(cbid)}/cookies/${enc(name)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<
           { cookie: DeclaredCookie; warnings?: DeclarationWarning[] } & Partial<DeclarationDryRun>
         >,
+      retireCookie: (cbid, name, input, o) =>
+        request('POST', `/sites/${enc(cbid)}/cookies/${enc(name)}/retire${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input ?? {}) as Promise<{
+          cookie: RetiredCookie;
+          matched: string[];
+          dryRun?: true;
+          retired?: RetiredCookie[];
+        }>,
+      unretireCookie: (async (cbid: string, name: string, o?: { dryRun?: boolean }) => {
+        const out = await request('DELETE', `/sites/${enc(cbid)}/cookies/${enc(name)}/retire${qs({ dryRun: o?.dryRun ? '1' : undefined })}`);
+        return o?.dryRun ? out : undefined;
+      }) as CookieMunchClient['sites']['unretireCookie'],
       undeclareCookie: (async (cbid: string, name: string, o?: { dryRun?: boolean }) => {
         const out = await request('DELETE', `/sites/${enc(cbid)}/cookies/${enc(name)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`);
         return o?.dryRun ? (out as DeclarationDryRun) : undefined;
