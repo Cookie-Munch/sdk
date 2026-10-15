@@ -1259,8 +1259,9 @@ export interface DsarExecutorInput {
   secretKey: string;
   /**
    * The signing secret of its webhook endpoint. Optional — polling closes tasks without it.
-   * A `whsec_<base64>` secret verifies a delivery signed with either the base64-decoded bytes
-   * or the literal string; anything else only with its UTF-8 bytes.
+   * A `whsec_<base64>` secret (standard base64 or base64url, padded or not) verifies a delivery
+   * signed with either the base64-decoded bytes or the literal string; anything else only with
+   * its UTF-8 bytes.
    */
   webhookSecret?: string;
   auto?: boolean;

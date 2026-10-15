@@ -1,6 +1,6 @@
 {
   "name": "@cookiemunch/sdk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Typed REST client for the Cookie Munch Developer API (/v1)",
   "license": "MIT",
   "type": "module",
@@ -36,5 +36,11 @@
   "homepage": "https://cookiemunch.net/docs",
   "bugs": {
     "url": "https://github.com/Cookie-Munch/sdk/issues"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.0",
+    "tsup": "8.5.1",
+    "typescript": "5.9.3",
+    "vitest": "2.1.9"
   }
 }
