@@ -4,7 +4,7 @@
  * from the key, so callers never pass an orgId. `fetch` is injectable for testing
  * and non-browser/non-Node runtimes; it defaults to the global fetch.
  *
- *   const fc = createCookieMunch({ apiKey: 'fck_…', baseUrl: 'https://cmp.example.com' });
+ *   const fc = createCookieMunch({ apiKey: 'fck_…', baseUrl: 'https://api.cookiemunch.net' });
  *   const sites = await fc.sites.list();
  */
 
@@ -36,7 +36,7 @@ import type {
 
 export interface CookieMunchOptions {
   apiKey: string;
-  /** e.g. "https://cmp.example.com" — the /v1 prefix is appended automatically. */
+  /** "https://api.cookiemunch.net" — the /v1 prefix is appended automatically. */
   baseUrl: string;
   /** Injectable for tests / custom runtimes. Defaults to the global fetch. */
   fetch?: typeof fetch;
@@ -51,11 +51,14 @@ export interface CookieMunchOptions {
 export class CookieMunchApiError extends Error {
   readonly status: number;
   readonly code?: string;
-  constructor(status: number, message: string, code?: string) {
+  /** The parsed JSON error body, when there was one (e.g. `issues` on a 422). */
+  readonly body?: unknown;
+  constructor(status: number, message: string, code?: string, body?: unknown) {
     super(message);
     this.name = 'CookieMunchApiError';
     this.status = status;
     if (code !== undefined) this.code = code;
+    if (body !== undefined) this.body = body;
   }
 }
 
@@ -142,6 +145,28 @@ export interface ScanStatus {
   status: 'idle' | 'scanning';
   /** Epoch-ms of the last completed scan, or null. */
   lastScannedAt: number | null;
+  /** What the last scan saw of the live banner's Accept all / Reject all. Absent until measured. */
+  buttonParity?: ButtonParityScan;
+}
+
+/** Consent-button parity of the banner a real browser saw on the site (see ScanStatus). */
+export interface ButtonParityScan {
+  url: string;
+  /** False when no visible consent accept control was found in a recognisable banner. */
+  bannerFound: boolean;
+  /**
+   * True when the checks ran: our embed, or a recognised banner with both Accept and Reject.
+   * False = not measured — no findings, `score` null. Absent on scans stored before it existed.
+   */
+  measured?: boolean;
+  /** `cookiemunch` = our embed; `other` = found by its button text. */
+  cmp: 'cookiemunch' | 'other' | null;
+  acceptFound: boolean;
+  rejectFound: boolean;
+  designWarnings: ButtonParityFinding[];
+  /** 0–100; null when no banner was found. */
+  score: number | null;
+  checkedAt?: number;
 }
 
 /** @deprecated The server returns {@link ScanStatus}; kept only for back-compat. */
@@ -224,7 +249,102 @@ export interface ConfigDryRun {
   /** Every leaf that would change. */
   diff: ConfigChange[];
   warnings?: ConfigWarning[];
+  /** Consent-button parity of the would-be config (see {@link ButtonParityFinding}). */
+  designWarnings: ButtonParityFinding[];
 }
+
+/** The effective style of an Accept all / Reject all control. */
+export interface ParityControlSummary {
+  id?: string;
+  label: string;
+  element: 'button' | 'link';
+  background?: string;
+  color?: string;
+  borderColor?: string;
+  borderWidth?: number;
+  fontSize?: number;
+  fontWeight?: number;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * One way Accept all is pushed harder than Reject all (colour, size, placement, copy, custom
+ * CSS). Returned as `designWarnings` on every config read and write, and by `lintConfig`.
+ * A warning, never an error — the config is saved regardless. See /docs/fair-consent-buttons.
+ */
+export interface ButtonParityFinding {
+  code:
+    | 'reject_missing_first_layer' | 'reject_missing_same_layer' | 'reject_hidden' | 'reject_below_fold' | 'reject_isolated'
+    | 'reject_low_emphasis' | 'saturation_gap' | 'color_mismatch' | 'reject_text_low_contrast' | 'reject_styled_as_link'
+    | 'font_size_gap' | 'font_weight_gap' | 'size_gap' | 'padding_gap' | 'border_mismatch' | 'reject_label_missing'
+    | 'reject_label_long' | 'confirmshaming' | 'custom_css_asymmetric';
+  severity: 'warning' | 'notice';
+  layer: 'banner' | 'preferences' | 'modal' | 'popup' | 'bar' | 'inline' | 'custom';
+  accept: ParityControlSummary | null;
+  reject: ParityControlSummary | null;
+  metric: { name: string; accept?: number; reject?: number; value: number; threshold: number };
+  detail: string;
+  fix: string;
+  where: { view?: string; variant?: string; theme?: 'light' | 'dark'; breakpoint?: 'desktop' | 'mobile'; language?: string; url?: string };
+}
+
+/** Reject all style values that would match the Accept all on the same layer. */
+export interface SuggestedRejectStyle {
+  layer: string;
+  view?: string;
+  background?: string;
+  color?: string;
+  borderColor?: string;
+  borderWidth?: number;
+  fontSize?: number;
+  fontWeight?: number;
+  width?: number;
+  height?: number;
+}
+
+/** `POST /v1/sites/:cbid/config/lint` — nothing is saved. */
+export interface ButtonParityLint {
+  /** `merged` = what PATCH would store (merged over the stored config); `replaced` = what PUT would store (`replace: true`). */
+  mode: 'merged' | 'replaced';
+  designWarnings: ButtonParityFinding[];
+  /** 100 minus 20 per warning and 5 per notice, floored at 0. */
+  score: number;
+  suggestedReject: SuggestedRejectStyle[];
+}
+
+/** The hosted rights page document. See docs/rights-page for each section type's props. */
+export interface RightsPageDocument {
+  v: 1;
+  theme: { preset: 'brand' | 'light' | 'dark' | 'custom'; width: 'narrow' | 'normal' | 'wide' | 'full'; density: 'compact' | 'comfortable' | 'spacious'; colorScheme: 'light' | 'dark' | 'auto'; [k: string]: unknown };
+  sections: Array<{ id: string; type: string; props: Record<string, unknown>; hidden?: { phone?: boolean; desktop?: boolean }; style?: Record<string, unknown> }>;
+  form: { requestTypes: Array<Record<string, unknown>>; fields: Array<Record<string, unknown>>; jurisdiction: 'auto' | 'ask' | 'hidden'; consentIdField: 'hidden' | 'optional' | 'required'; success: { title?: string; body?: string }; submitLabel?: string };
+  i18n: { defaultLocale: string; autoDetect: boolean; overrides: Record<string, unknown> };
+  seo: { title?: string; description?: string; favicon?: string; image?: string; index: boolean };
+  customCss?: string;
+}
+/** `message` is English; `code` (+ `params`) is stable, for your own wording or language. */
+export interface RightsPageIssue { path: string; message: string; code?: string; params?: Record<string, string | number> }
+export interface RightsPageDraft { cbid: string; draft: RightsPageDocument; version: number; publishedAt: number | null; updatedAt: number | null; warnings: RightsPageIssue[] }
+export interface RightsPageDryRun { dryRun: true; cbid: string; draft: RightsPageDocument; warnings: RightsPageIssue[] }
+/** Who published a version: `publishedBy` is an actor id; `publishedByEmail` names a dashboard user (null for an API key). */
+export interface RightsPagePublisher { publishedBy: string; publishedByEmail: string | null; publishedVia: 'dashboard' | 'api_key' }
+export interface RightsPagePublished { cbid: string; page: RightsPageDocument; version: number; publishedAt: number; publishedBy?: string | null; publishedByEmail?: string | null; publishedVia?: 'dashboard' | 'api_key' | null }
+/**
+ * Optimistic concurrency for a draft write: the draft's `updatedAt` as you last read it (epoch ms or
+ * an ISO date; null = you saw no saved draft). A mismatch rejects with a 409 CookieMunchApiError whose
+ * body is RightsPageDraftConflict. Omitted: a full write (put) is last-write-wins; a patch merges onto the draft
+ * as it is when written, so a concurrent edit is not lost.
+ */
+export interface RightsPageWriteOptions { baseUpdatedAt?: number | string | null }
+export interface RightsPageDraftConflict { error: 'draft_conflict'; draft: RightsPageDraft }
+/** `draftUpdatedAt`: the draft's updatedAt after the call — pass it as the next `baseUpdatedAt`. */
+export interface RightsPagePublishResult { cbid: string; version: number; publishedAt: number; draftUpdatedAt: number; rolledBackTo?: number }
+export interface RightsPageVersions { cbid: string; versions: Array<{ version: number; publishedAt: number } & RightsPagePublisher> }
+
+/** The draft body with `baseUpdatedAt` added when the caller passed one (null included). */
+const withBase = (doc: object, opts?: RightsPageWriteOptions): object =>
+  opts?.baseUpdatedAt !== undefined ? { ...doc, baseUpdatedAt: opts.baseUpdatedAt } : doc;
 
 /** Options for POST /v1/sites/:cbid/preview-token. All optional. */
 export interface PreviewTokenOptions {
@@ -248,6 +368,67 @@ export interface PreviewToken {
   lang?: string;
   /** The page with `cm_preview` / `cm_region` / `cm_lang` added. */
   previewUrl?: string;
+}
+
+/** A right a rights link may file (the hosted rights page's request-type kinds). */
+export type RightKind =
+  | 'access' | 'erasure' | 'rectification' | 'portability' | 'restriction'
+  | 'objection' | 'opt_out_sale' | 'opt_out_targeted' | 'limit_sensitive';
+
+/** Input for POST /v1/sites/:cbid/rights-links. */
+export interface RightsLinkInput {
+  /** The signed-in person. `email` must be an address you have verified. */
+  subject: { email: string; userId?: string };
+  /** Limit the link to these rights. Default: every right the page offers. */
+  rights?: RightKind[];
+  /** Lifetime in seconds, 60..3600. Default 900. */
+  ttlSeconds?: number;
+}
+
+/** A signed, single-use link to the hosted rights page for one signed-in person. */
+export interface RightsLink {
+  url: string;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+}
+
+/** One DNS record to create, exactly as written. */
+export interface DnsRecordInstruction {
+  type: 'CNAME' | 'TXT';
+  name: string;
+  value: string;
+}
+
+/** A custom hostname serving a site's rights page. */
+export interface RightsPageDomain {
+  /** Lowercase ASCII form (punycode for an internationalised name). */
+  hostname: string;
+  /** As a person reads it. */
+  unicodeHostname: string;
+  cbid: string;
+  /** pending_dns → verifying → issuing → active, or error (see lastError). */
+  status: 'pending_dns' | 'verifying' | 'issuing' | 'active' | 'error';
+  certStatus: 'none' | 'pending' | 'issued' | 'failed';
+  createdAt: number;
+  verifiedAt?: number;
+  activatedAt?: number;
+  lastCheckedAt?: number;
+  /** dns_not_found | wrong_target | hostname_in_use | router_write_failed | certificate_not_issued | dns_changed | probe_failed */
+  lastError?: string;
+  url: string;
+  /** The records to create: the CNAME, or (apex / flattened / proxied) the TXT plus an ALIAS to the same target. */
+  /** `cname.value` is this domain's own `<token>.cname.cookiemunch.net` — unique to the claim; a CNAME to anything else does not verify it. */
+  dns: { recommended: 'cname' | 'flattened'; cname: DnsRecordInstruction; txt: DnsRecordInstruction };
+  /** Only on a verify that found no proof: what DNS answered. */
+  dnsSeen?: { cnames: string[]; addresses: string[]; txt: string[] };
+}
+
+/** The site's custom hostnames, the plan allowance (null = unlimited) and the org's usage. */
+export interface RightsPageDomainList {
+  domains: RightsPageDomain[];
+  limit: number | null;
+  used: number;
+  target: string;
 }
 
 /** Options for the snippet endpoint. */
@@ -312,7 +493,7 @@ export type FlowOp = { op: string } & Record<string, unknown>;
  * on a validation/lint failure the config is NOT saved and `issues` says why.
  */
 export type FlowOpResponse =
-  | { ok: true; flow: Record<string, unknown> }
+  | { ok: true; flow: Record<string, unknown>; /** Consent-button parity of the saved design. */ designWarnings?: ButtonParityFinding[] }
   | { ok: false; failedAt?: number; op?: unknown; issues: FlowIssue[] };
 
 /** A reusable brand kit (colors/logo/typography) for banner theming. */
@@ -476,6 +657,140 @@ export interface Org {
   logoUrl: string | null;
 }
 
+export type MailProviderKind = 'brevo' | 'sendgrid' | 'postmark' | 'resend' | 'ses' | 'smtp';
+
+/**
+ * The org's own mail provider for rights-request mail. The credential is never returned —
+ * `secretLast4` only. `sender` says whether verification codes go through it right now
+ * (`own`) or are not mailed at all (`none`): there is no shared sender for rights mail.
+ */
+export interface MailProvider {
+  configured: boolean;
+  sender: 'own' | 'none';
+  provider?: MailProviderKind;
+  fromEmail?: string;
+  fromName?: string;
+  replyTo?: string;
+  ses?: { region: string; accessKeyId: string };
+  smtp?: { host: string; port: number; security: 'tls' | 'starttls'; username: string };
+  secretLast4?: string;
+  status?: 'untested' | 'verified' | 'failing';
+  verifiedAt?: number | null;
+  lastTest?: { ok: boolean; at: number; error?: string } | null;
+  updatedAt?: number;
+  /** Only on `set`: no verification codes are mailed until a test succeeds. */
+  note?: string;
+}
+
+/** Save a provider. `secret` is write-only; omit it to keep the stored one (same provider only). */
+export interface MailProviderInput {
+  provider: MailProviderKind;
+  fromEmail: string;
+  fromName?: string | null;
+  replyTo?: string | null;
+  secret?: string;
+  ses?: { region: string; accessKeyId: string };
+  smtp?: { host: string; port: 25 | 465 | 587 | 2525; security: 'tls' | 'starttls'; username: string };
+}
+
+export type RightsCaptchaProvider = 'turnstile' | 'hcaptcha' | 'recaptcha_v2' | 'recaptcha_v3';
+
+/**
+ * The rights page's captcha in force: your own keys (`own`, recommended) or none (`off`, the default).
+ * Cookie Munch's own captcha is never used on rights pages. The secret is never returned.
+ */
+export interface RightsCaptcha {
+  /** `site`: the site's own setting; `org`: the organisation default; `default`: neither (off). */
+  source: 'site' | 'org' | 'default';
+  mode: 'own' | 'off';
+  provider?: RightsCaptchaProvider;
+  siteKey?: string;
+  /** reCAPTCHA v3 only. */
+  minScore?: number;
+  secretSet: boolean;
+  secretLast4?: string;
+  status: 'verified' | 'disabled';
+  verifiedAt: number | null;
+  updatedAt: number | null;
+  /** Only when a `set` turned the captcha off: what that costs. */
+  warning?: string;
+}
+
+/**
+ * `own` needs provider, siteKey and (the first time) secret; the provider is asked to accept the secret before
+ * anything is saved (422 captcha_secret_invalid / 502 captcha_unreachable). `off` removes spam protection beyond
+ * the hidden spam-trap field, the rate limits and the email code.
+ */
+export interface RightsCaptchaInput {
+  mode: 'own' | 'off';
+  provider?: RightsCaptchaProvider;
+  siteKey?: string;
+  /** Write-only. Omit to keep the stored one (same provider, same place). */
+  secret?: string;
+  /** reCAPTCHA v3 only: 0.1–0.9, default 0.5. */
+  minScore?: number;
+}
+
+export type RightsIdentityType = 'clerk' | 'atlas' | 'oidc_jwt';
+
+/**
+ * The sign-in provider rights requests are verified with: a visitor signed in to your site is
+ * verified by their session, with no code mail. Nothing here is secret.
+ */
+export interface RightsIdentity {
+  /** `site`: the site's own setting; `org`: the organisation default; `default`: neither (none). */
+  source: 'site' | 'org' | 'default';
+  configured: boolean;
+  type?: RightsIdentityType;
+  issuer?: string;
+  jwksUrl?: string;
+  audience?: string;
+  authorizedParties?: string[];
+  emailClaim?: string;
+  emailVerifiedClaim?: string;
+  sessionCookieName?: string;
+  /** Present (true) only when set: clerk/atlas tokens without the verified claim are accepted. */
+  trustEmailClaim?: true;
+  status: 'verified' | 'not_configured';
+  verifiedAt: number | null;
+  updatedAt: number | null;
+}
+
+/**
+ * The JWKS is fetched and checked before anything is saved (502 identity_jwks_unreachable /
+ * 422 identity_jwks_invalid). `authorizedParties` (your own origins) is required for clerk and atlas;
+ * oidc_jwt needs an `audience` or `authorizedParties`. Issuer and JWKS URL are https on a host name,
+ * never an IP address. The token must carry the email and a verified-email claim set to `true`
+ * (clerk/atlas with `trustEmailClaim`: the verified claim may be absent).
+ */
+export interface RightsIdentityInput {
+  type: RightsIdentityType;
+  /** Exactly the token's `iss` (Clerk: your Frontend API URL). */
+  issuer: string;
+  /** Required for oidc_jwt; clerk/atlas default to `<issuer>/.well-known/jwks.json`. */
+  jwksUrl?: string;
+  audience?: string;
+  authorizedParties?: string[];
+  /** Default `email`. */
+  emailClaim?: string;
+  /** Default `email_verified`. */
+  emailVerifiedClaim?: string;
+  /** Default `__session`: the cookie the hosted page on your custom domain reads. */
+  sessionCookieName?: string;
+  /**
+   * clerk/atlas only, default false. True when your provider has no verified-email claim and every
+   * address it puts in the email claim is verified: a token without the verified claim is accepted.
+   */
+  trustEmailClaim?: boolean;
+}
+
+export interface MailProviderTestResult {
+  ok: boolean;
+  sentTo: string;
+  error?: string;
+  mailProvider: MailProvider;
+}
+
 /** Change an org's name or logo. `logoUrl: null` removes the logo. */
 export interface OrgUpdate {
   name?: string;
@@ -570,6 +885,8 @@ export interface BannerSummary {
   name: string;
   updatedAt: number;
   assignedCbids: string[];
+  /** How many warning-severity consent-button parity findings the design has (0 = fair). */
+  designWarningCount: number;
 }
 
 /** A full account-level banner record, including its config JSON. */
@@ -580,6 +897,8 @@ export interface BannerRecord {
   json: SiteConfig;
   createdAt: number;
   updatedAt: number;
+  /** Consent-button parity findings in the design. Never blocks a save. */
+  designWarnings?: ButtonParityFinding[];
 }
 
 /**
@@ -1032,6 +1351,12 @@ export interface CookieMunchClient {
      * add `keep: 'unspecified'` to preview a replace that keeps omitted fields.
      */
     dryRunConfig(cbid: string, config: Partial<SiteConfig>, opts?: { mode?: 'patch' | 'put' } & PutConfigOptions): Promise<ConfigDryRun>;
+    /**
+     * Check a proposed config for consent-button parity — an Accept all pushed harder than
+     * Reject all — without saving it. A partial v1 config is merged over the stored one (like
+     * PATCH); a v2 design, or `replace: true`, is linted as sent. Needs only `sites:read`.
+     */
+    lintConfig(cbid: string, config: Partial<SiteConfig>, opts?: { replace?: boolean }): Promise<ButtonParityLint>;
     cookies(cbid: string): Promise<CookieDeclaration>;
     scan(cbid: string): Promise<ScanStatus>;
     scanStatus(cbid: string): Promise<ScanStatus>;
@@ -1162,6 +1487,36 @@ export interface CookieMunchClient {
     list(): Promise<BrandKit[]>;
     create(input: BrandKitCreate): Promise<{ kit: BrandKit }>;
     delete(id: string): Promise<void>;
+  };
+  /** The hosted rights page (cookiemunch.net/r/<cbid> or the site's own domain). */
+  rightsPage: {
+    get(cbid: string): Promise<RightsPageDraft>;
+    /** Replace the draft. Nothing is live until publish(). `opts.baseUpdatedAt` refuses to overwrite a newer save (409 draft_conflict). */
+    put(cbid: string, page: RightsPageDocument, opts?: RightsPageWriteOptions): Promise<RightsPageDraft>;
+    /** Merge into the draft: objects merge, arrays replace, null removes. `opts.baseUpdatedAt` as on put(). */
+    patch(cbid: string, patch: Record<string, unknown>, opts?: RightsPageWriteOptions): Promise<RightsPageDraft>;
+    /** Validate a write without saving it. */
+    dryRun(cbid: string, page: Record<string, unknown>, opts?: { mode?: 'patch' | 'put' }): Promise<RightsPageDryRun>;
+    getPublished(cbid: string): Promise<RightsPagePublished>;
+    /**
+     * Publish the draft; it goes live at once. Pass `opts.baseUpdatedAt` (the draft's updatedAt
+     * as you read it) so only the draft you saw goes live: 409 draft_conflict otherwise.
+     */
+    publish(cbid: string, opts?: RightsPageWriteOptions): Promise<RightsPagePublishResult>;
+    versions(cbid: string): Promise<RightsPageVersions>;
+    /**
+     * Publish an earlier version again; it goes live at once and REPLACES the current draft
+     * (unpublished edits are lost). `opts.baseUpdatedAt` refuses with 409 if the draft moved.
+     */
+    rollback(cbid: string, version: number, opts?: RightsPageWriteOptions): Promise<RightsPagePublishResult>;
+    /** Custom hostnames serving the rights page, with the plan allowance. */
+    listDomains(cbid: string): Promise<RightsPageDomainList>;
+    /** Add a custom hostname (e.g. privacy.example.com); the answer carries the DNS records to create. */
+    addDomain(cbid: string, hostname: string): Promise<RightsPageDomain>;
+    /** Check it now: DNS while pending, the HTTPS answer once routed. Always the domain as it stands. */
+    verifyDomain(cbid: string, hostname: string): Promise<RightsPageDomain>;
+    /** Remove it: it stops being served and its certificate is not renewed. */
+    removeDomain(cbid: string, hostname: string): Promise<void>;
   };
   /**
    * Identity resolution. Reads are POSTs on purpose: a person's identifiers travel in the
@@ -1340,6 +1695,35 @@ export interface CookieMunchClient {
     get(): Promise<Org>;
     /** Rename the org or set its logo. Deleting the org is not available through the API. */
     update(patch: OrgUpdate): Promise<Org>;
+    /**
+     * Your own mail provider for rights-request mail. It carries verification codes once
+     * `test` succeeds; every `set` clears that. There is no shared sender: without one, requests
+     * are verified by your sign-in provider (`rightsIdentity`) or filed unverified for you to confirm.
+     */
+    mailProvider: {
+      get(): Promise<MailProvider>;
+      set(input: MailProviderInput): Promise<MailProvider>;
+      remove(): Promise<void>;
+      /** Send a test through your provider. `to` defaults to the reply-to, else the from address. */
+      test(to?: string): Promise<MailProviderTestResult>;
+    };
+    /**
+     * The default captcha for your rights pages, for every site without its own (`rightsCaptcha`): your own
+     * keys (recommended) or off. Without one, rights pages have no captcha.
+     */
+    rightsCaptcha: {
+      get(): Promise<RightsCaptcha>;
+      set(input: RightsCaptchaInput): Promise<RightsCaptcha>;
+      /** Remove the default; answers the setting now in force (off). */
+      remove(): Promise<RightsCaptcha>;
+    };
+    /** The default sign-in provider rights requests are verified with, for every site without its own. */
+    rightsIdentity: {
+      get(): Promise<RightsIdentity>;
+      set(input: RightsIdentityInput): Promise<RightsIdentity>;
+      /** Remove the default; answers the setting now in force. */
+      remove(): Promise<RightsIdentity>;
+    };
   };
   /** The org's audit log, newest first. API actions appear as `apikey:<prefix>`. */
   audit(limit?: number): Promise<{ entries: AuditEntry[] }>;
@@ -1383,6 +1767,34 @@ export interface CookieMunchClient {
     deadLetters(): Promise<{ deadLetters: WebhookDeadLetter[] }>;
     /** Deliver a dead letter again, to the subscription as it is now. */
     replayDeadLetter(id: string): Promise<unknown>;
+  };
+  /**
+   * Account-linked rights requests: a single-use link to the hosted rights page for a person your
+   * backend knows is signed in. The page locks their email and skips the code step. Requires dsar:write.
+   */
+  rightsLinks: {
+    create(cbid: string, input: RightsLinkInput): Promise<RightsLink>;
+  };
+  /**
+   * A site's rights-page captcha: your own Turnstile, hCaptcha or reCAPTCHA keys (recommended), or off. A site
+   * without its own setting uses the organisation default (`org.rightsCaptcha`), else off. Requires sites:read / sites:write.
+   */
+  rightsCaptcha: {
+    get(cbid: string): Promise<RightsCaptcha>;
+    set(cbid: string, input: RightsCaptchaInput): Promise<RightsCaptcha>;
+    /** Remove the site's own setting: it inherits the organisation default again. Answers the setting now in force. */
+    remove(cbid: string): Promise<RightsCaptcha>;
+  };
+  /**
+   * A site's sign-in provider (Clerk, Atlas or any JWKS issuer): a visitor signed in to your site
+   * is verified by their session, with no code mail. A site without its own setting uses the
+   * organisation default (`org.rightsIdentity`). Requires sites:read / sites:write.
+   */
+  rightsIdentity: {
+    get(cbid: string): Promise<RightsIdentity>;
+    set(cbid: string, input: RightsIdentityInput): Promise<RightsIdentity>;
+    /** Remove the site's own setting: it inherits the organisation default again. */
+    remove(cbid: string): Promise<RightsIdentity>;
   };
   /** One person's consent across every site in the org, by the subjectId your apps attach. */
   subjects: {
@@ -1431,14 +1843,16 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     if (!res.ok) {
       let message = `request failed with status ${res.status}`;
       let code: string | undefined;
+      let parsed: unknown;
       try {
         const data = (await res.json()) as { error?: string; code?: string };
+        parsed = data;
         if (typeof data.error === 'string') message = data.error;
         if (typeof data.code === 'string') code = data.code;
       } catch {
         /* non-JSON error body — keep the default message */
       }
-      throw new CookieMunchApiError(res.status, message, code);
+      throw new CookieMunchApiError(res.status, message, code, parsed);
     }
     if (res.status === 204) return undefined;
     if (raw) return res.text();
@@ -1478,6 +1892,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
           `/sites/${enc(cbid)}/config${qs({ dryRun: 1, keep: opts?.mode === 'put' ? opts.keep : undefined })}`,
           config,
         ) as Promise<ConfigDryRun>,
+      lintConfig: (cbid, config, opts) =>
+        request('POST', `/sites/${enc(cbid)}/config/lint${qs({ replace: opts?.replace ? 1 : undefined })}`, config) as Promise<ButtonParityLint>,
       cookies: (cbid) => get(`/sites/${enc(cbid)}/cookies`) as Promise<CookieDeclaration>,
       scan: (cbid) => request('POST', `/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
       scanStatus: (cbid) => get(`/sites/${enc(cbid)}/scan`) as Promise<ScanStatus>,
@@ -1579,6 +1995,24 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       create: (input) => request('POST', '/brand-kits', input) as Promise<{ kit: BrandKit }>,
       delete: async (id) => {
         await request('DELETE', `/brand-kits/${enc(id)}`);
+      },
+    },
+    rightsPage: {
+      get: (cbid) => get(`/sites/${enc(cbid)}/rights-page`) as Promise<RightsPageDraft>,
+      put: (cbid, page, opts) => request('PUT', `/sites/${enc(cbid)}/rights-page`, withBase(page, opts)) as Promise<RightsPageDraft>,
+      patch: (cbid, patch, opts) => request('PATCH', `/sites/${enc(cbid)}/rights-page`, withBase(patch, opts)) as Promise<RightsPageDraft>,
+      dryRun: (cbid, page, opts) =>
+        request(opts?.mode === 'put' ? 'PUT' : 'PATCH', `/sites/${enc(cbid)}/rights-page?dryRun=1`, page) as Promise<RightsPageDryRun>,
+      getPublished: (cbid) => get(`/sites/${enc(cbid)}/rights-page/published`) as Promise<RightsPagePublished>,
+      publish: (cbid, opts) => request('POST', `/sites/${enc(cbid)}/rights-page/publish`, withBase({}, opts)) as Promise<RightsPagePublishResult>,
+      versions: (cbid) => get(`/sites/${enc(cbid)}/rights-page/versions`) as Promise<RightsPageVersions>,
+      rollback: (cbid, version, opts) => request('POST', `/sites/${enc(cbid)}/rights-page/rollback`, withBase({ version }, opts)) as Promise<RightsPagePublishResult>,
+      listDomains: (cbid) => get(`/sites/${enc(cbid)}/rights-page/domains`) as Promise<RightsPageDomainList>,
+      addDomain: (cbid, hostname) => request('POST', `/sites/${enc(cbid)}/rights-page/domains`, { hostname }) as Promise<RightsPageDomain>,
+      verifyDomain: (cbid, hostname) =>
+        request('POST', `/sites/${enc(cbid)}/rights-page/domains/${enc(hostname)}/verify`) as Promise<RightsPageDomain>,
+      removeDomain: async (cbid, hostname) => {
+        await request('DELETE', `/sites/${enc(cbid)}/rights-page/domains/${enc(hostname)}`);
       },
     },
     identity: {
@@ -1690,6 +2124,24 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     org: {
       get: () => get('/org') as Promise<Org>,
       update: (patch) => request('PATCH', '/org', patch) as Promise<Org>,
+      mailProvider: {
+        get: () => get('/org/mail-provider') as Promise<MailProvider>,
+        set: (input) => request('PUT', '/org/mail-provider', input) as Promise<MailProvider>,
+        remove: async () => {
+          await request('DELETE', '/org/mail-provider');
+        },
+        test: (to) => request('POST', '/org/mail-provider/test', to ? { to } : {}) as Promise<MailProviderTestResult>,
+      },
+      rightsCaptcha: {
+        get: () => get('/org/rights-captcha') as Promise<RightsCaptcha>,
+        set: (input) => request('PUT', '/org/rights-captcha', input) as Promise<RightsCaptcha>,
+        remove: () => request('DELETE', '/org/rights-captcha') as Promise<RightsCaptcha>,
+      },
+      rightsIdentity: {
+        get: () => get('/org/rights-identity') as Promise<RightsIdentity>,
+        set: (input) => request('PUT', '/org/rights-identity', input) as Promise<RightsIdentity>,
+        remove: () => request('DELETE', '/org/rights-identity') as Promise<RightsIdentity>,
+      },
     },
     audit: (limit) => get(`/audit${qs({ limit })}`) as Promise<{ entries: AuditEntry[] }>,
     assets: {
@@ -1724,6 +2176,19 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       test: (id) => request('POST', `/webhooks/${enc(id)}/test`) as Promise<WebhookTestResult>,
       deadLetters: () => get('/webhooks/dead-letters') as Promise<{ deadLetters: WebhookDeadLetter[] }>,
       replayDeadLetter: (id) => request('POST', `/webhooks/dead-letters/${enc(id)}/replay`),
+    },
+    rightsLinks: {
+      create: (cbid, input) => request('POST', `/sites/${enc(cbid)}/rights-links`, input) as Promise<RightsLink>,
+    },
+    rightsCaptcha: {
+      get: (cbid) => get(`/sites/${enc(cbid)}/rights-captcha`) as Promise<RightsCaptcha>,
+      set: (cbid, input) => request('PUT', `/sites/${enc(cbid)}/rights-captcha`, input) as Promise<RightsCaptcha>,
+      remove: (cbid) => request('DELETE', `/sites/${enc(cbid)}/rights-captcha`) as Promise<RightsCaptcha>,
+    },
+    rightsIdentity: {
+      get: (cbid) => get(`/sites/${enc(cbid)}/rights-identity`) as Promise<RightsIdentity>,
+      set: (cbid, input) => request('PUT', `/sites/${enc(cbid)}/rights-identity`, input) as Promise<RightsIdentity>,
+      remove: (cbid) => request('DELETE', `/sites/${enc(cbid)}/rights-identity`) as Promise<RightsIdentity>,
     },
     subjects: {
       consent: (subjectId) =>

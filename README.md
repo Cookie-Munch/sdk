@@ -9,7 +9,7 @@ import { createCookieMunch, CookieMunchApiError } from '@cookiemunch/sdk';
 
 const fc = createCookieMunch({
   apiKey: process.env.COOKIEMUNCH_API_KEY!, // "fck_…"
-  baseUrl: 'https://cmp.example.com',         // "/v1" is appended automatically
+  baseUrl: 'https://api.cookiemunch.net',     // "/v1" is appended automatically
 });
 
 const sites = await fc.sites.list();
@@ -30,11 +30,18 @@ runtimes; it defaults to the global `fetch`.
 
 - `me()`
 - `sites.list() / create(input) / get(cbid) / delete(cbid) / getConfig(cbid) / putConfig(cbid, config)`
+- `sites.lintConfig(cbid, config, { replace? })` — consent-button parity: is Accept all pushed harder than Reject all? Returns `designWarnings`, `score`, `suggestedReject`; nothing is saved. Every config read/write also carries `designWarnings`.
 - `consent.stats(cbid, {from?,to?}) / log(cbid, {from?,to?,limit?}) / export(cbid, {from?,to?}) / receipt(cbid, stamp)`
 - `dsar.list() / create(input) / advance(id, toStatus)`
 - `vendors.list() / create(input)`
 - `ropa.list() / create(input)`
 - `webhooks.list() / create(input)`
+- `rightsPage.get(cbid) / put(cbid, page, {baseUpdatedAt?}) / patch(cbid, patch, {baseUpdatedAt?}) / dryRun(cbid, page, {mode?}) / getPublished(cbid) / publish(cbid, {baseUpdatedAt?}) / versions(cbid) / rollback(cbid, version, {baseUpdatedAt?})` — pass the draft's `updatedAt` as `baseUpdatedAt` so a newer save is a 409 `draft_conflict`, never overwritten or published unseen; a rollback replaces the draft
+- `rightsPage.listDomains(cbid) / addDomain(cbid, hostname) / verifyDomain(cbid, hostname) / removeDomain(cbid, hostname)` — the rights page on your own hostname
+- `rightsLinks.create(cbid, { subject, rights?, ttlSeconds? })` — a signed, single-use rights-page link for a signed-in person
+- `org.mailProvider.get() / set(input) / test(to?) / remove()` — your own provider for rights-request mail
+
+These are the most used; the client covers every `/v1` operation (see the typed `CookieMunchClient`).
 
 `export()` returns the raw CSV string; all other methods return parsed JSON. Any
 non-2xx response throws a `CookieMunchApiError { status, code?, message }`. Error `code`

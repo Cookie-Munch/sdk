@@ -118,6 +118,36 @@ export interface DsarRequest {
   test?: boolean;
 }
 
+/**
+ * How a rights-page requester was verified — on every answer of the public intake
+ * (`POST /api/v1/public/dsar`, `/verify`, `/resend`) and so in the `dsar.created` webhook payload.
+ * `email_code` on a 202: a code was mailed through your own provider; on a 201: the code matched.
+ * `none` with a `reason`: filed without verification — confirm the requester yourself. `none`
+ * without one: an opt-out, which needs no verification.
+ */
+export type PublicVerification =
+  | { method: 'session' | 'email_code' | 'account_link' }
+  | { method: 'none'; reason?: 'no_verification_configured' | 'mail_failed' | 'recipient_rejected' };
+
+/** A public intake that filed a request (201): also the `dsar.created` payload for one. */
+export interface PublicDsarFiled {
+  id: string;
+  status: 'received' | 'verifying';
+  /** Epoch ms the statutory response is due. */
+  deadline: number;
+  /** Only when filed without verification; the same as `verification.method` `none` with a `reason`. */
+  unverified?: true;
+  verification: PublicVerification;
+}
+
+/** A public intake waiting for its email code (202). */
+export interface PublicDsarPending {
+  pendingId: string;
+  expiresAt: number;
+  resendAfter?: number;
+  verification: { method: 'email_code' };
+}
+
 export interface DsarCreate {
   type: DsarType;
   subjectEmail: string;

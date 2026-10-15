@@ -147,3 +147,145 @@ describe('the rest', () => {
     expect(calls[0]!.url).toBe('https://api.example.com/v1/ai/systems');
   });
 });
+
+describe('org.mailProvider — bring your own mail provider for rights mail', () => {
+  it('get / set / test / remove hit /v1/org/mail-provider', async () => {
+    const { fc, calls } = client([
+      { json: { configured: false, sender: 'shared' } },
+      { json: { configured: true, provider: 'resend', fromEmail: 'p@acme.com', secretLast4: 'abcd', status: 'untested', sender: 'shared' } },
+      { json: { ok: true, sentTo: 'me@acme.com', mailProvider: { configured: true, sender: 'own' } } },
+      { status: 204 },
+    ]);
+    expect(await fc.org.mailProvider.get()).toEqual({ configured: false, sender: 'shared' });
+    const saved = await fc.org.mailProvider.set({ provider: 'resend', fromEmail: 'p@acme.com', secret: 're_123abcd' });
+    expect(saved.secretLast4).toBe('abcd');
+    const t = await fc.org.mailProvider.test('me@acme.com');
+    expect(t.ok).toBe(true);
+    await fc.org.mailProvider.remove();
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET https://api.example.com/v1/org/mail-provider',
+      'PUT https://api.example.com/v1/org/mail-provider',
+      'POST https://api.example.com/v1/org/mail-provider/test',
+      'DELETE https://api.example.com/v1/org/mail-provider',
+    ]);
+    expect(calls[1]?.body).toEqual({ provider: 'resend', fromEmail: 'p@acme.com', secret: 're_123abcd' });
+    expect(calls[2]?.body).toEqual({ to: 'me@acme.com' });
+  });
+});
+
+describe('rightsCaptcha — the rights page’s captcha: your own keys, or off', () => {
+  it('site and org default: get / set / remove with the right verb and path', async () => {
+    const { fc, calls } = client(Array.from({ length: 6 }, () => ({ json: { source: 'site', mode: 'off', secretSet: false, status: 'disabled', verifiedAt: null, updatedAt: 1 } })));
+    expect((await fc.rightsCaptcha.get('s 1')).mode).toBe('off');
+    await fc.rightsCaptcha.set('s1', { mode: 'own', provider: 'hcaptcha', siteKey: 'k-12345678', secret: '0xsecret' });
+    await fc.rightsCaptcha.remove('s1');
+    await fc.org.rightsCaptcha.get();
+    await fc.org.rightsCaptcha.set({ mode: 'off' });
+    await fc.org.rightsCaptcha.remove();
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET https://api.example.com/v1/sites/s%201/rights-captcha',
+      'PUT https://api.example.com/v1/sites/s1/rights-captcha',
+      'DELETE https://api.example.com/v1/sites/s1/rights-captcha',
+      'GET https://api.example.com/v1/org/rights-captcha',
+      'PUT https://api.example.com/v1/org/rights-captcha',
+      'DELETE https://api.example.com/v1/org/rights-captcha',
+    ]);
+    expect(calls[1]?.body).toEqual({ mode: 'own', provider: 'hcaptcha', siteKey: 'k-12345678', secret: '0xsecret' });
+    expect(calls[4]?.body).toEqual({ mode: 'off' });
+  });
+});
+
+describe('rightsIdentity — verify rights requesters with your own sign-in sessions', () => {
+  it('site and org default: get / set / remove with the right verb and path', async () => {
+    const { fc, calls } = client(Array.from({ length: 6 }, () => ({ json: { source: 'site', configured: true, type: 'clerk', status: 'verified', verifiedAt: 1, updatedAt: 1 } })));
+    expect((await fc.rightsIdentity.get('s 1')).type).toBe('clerk');
+    await fc.rightsIdentity.set('s1', { type: 'clerk', issuer: 'https://clerk.acme.example', authorizedParties: ['https://www.acme.example'] });
+    await fc.rightsIdentity.remove('s1');
+    await fc.org.rightsIdentity.get();
+    await fc.org.rightsIdentity.set({ type: 'oidc_jwt', issuer: 'https://id.acme.example', jwksUrl: 'https://id.acme.example/keys' });
+    await fc.org.rightsIdentity.remove();
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET https://api.example.com/v1/sites/s%201/rights-identity',
+      'PUT https://api.example.com/v1/sites/s1/rights-identity',
+      'DELETE https://api.example.com/v1/sites/s1/rights-identity',
+      'GET https://api.example.com/v1/org/rights-identity',
+      'PUT https://api.example.com/v1/org/rights-identity',
+      'DELETE https://api.example.com/v1/org/rights-identity',
+    ]);
+    expect(calls[1]?.body).toEqual({ type: 'clerk', issuer: 'https://clerk.acme.example', authorizedParties: ['https://www.acme.example'] });
+    expect(calls[4]?.body).toEqual({ type: 'oidc_jwt', issuer: 'https://id.acme.example', jwksUrl: 'https://id.acme.example/keys' });
+  });
+});
+
+describe('rightsPage', () => {
+  it('reaches every rights-page operation with the right verb and path', async () => {
+    const { fc, calls } = client(Array.from({ length: 9 }, () => ({ json: {} })));
+    await fc.rightsPage.get('s 1');
+    await fc.rightsPage.put('s1', { v: 1 } as never);
+    await fc.rightsPage.patch('s1', { seo: { title: 'x' } });
+    await fc.rightsPage.dryRun('s1', { seo: { title: 'x' } });
+    await fc.rightsPage.dryRun('s1', { v: 1 }, { mode: 'put' });
+    await fc.rightsPage.getPublished('s1');
+    await fc.rightsPage.publish('s1');
+    await fc.rightsPage.versions('s1');
+    await fc.rightsPage.rollback('s1', 3);
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET https://api.example.com/v1/sites/s%201/rights-page',
+      'PUT https://api.example.com/v1/sites/s1/rights-page',
+      'PATCH https://api.example.com/v1/sites/s1/rights-page',
+      'PATCH https://api.example.com/v1/sites/s1/rights-page?dryRun=1',
+      'PUT https://api.example.com/v1/sites/s1/rights-page?dryRun=1',
+      'GET https://api.example.com/v1/sites/s1/rights-page/published',
+      'POST https://api.example.com/v1/sites/s1/rights-page/publish',
+      'GET https://api.example.com/v1/sites/s1/rights-page/versions',
+      'POST https://api.example.com/v1/sites/s1/rights-page/rollback',
+    ]);
+    expect(calls[8]!.body).toEqual({ version: 3 });
+  });
+});
+
+describe('rightsPage draft concurrency', () => {
+  it('put/patch send baseUpdatedAt when given, and a 409 keeps the stored draft on the error', async () => {
+    const stored = { cbid: 's1', draft: { v: 1 }, version: 0, publishedAt: null, updatedAt: 7, warnings: [] };
+    const { fc, calls } = client([{ json: {} }, { json: {} }, { json: {} }, { status: 409, json: { error: 'draft_conflict', draft: stored } }]);
+    await fc.rightsPage.put('s1', { v: 1 } as never, { baseUpdatedAt: 5 });
+    await fc.rightsPage.patch('s1', { seo: { title: 'x' } }, { baseUpdatedAt: null });
+    await fc.rightsPage.put('s1', { v: 1 } as never);
+    const err = await fc.rightsPage.put('s1', { v: 1 } as never, { baseUpdatedAt: 6 }).catch((e: unknown) => e);
+    expect(calls[0]!.body).toEqual({ v: 1, baseUpdatedAt: 5 });
+    expect(calls[1]!.body).toEqual({ seo: { title: 'x' }, baseUpdatedAt: null });
+    expect(calls[2]!.body).toEqual({ v: 1 });
+    expect((err as CookieMunchApiError).status).toBe(409);
+    expect((err as CookieMunchApiError).body).toEqual({ error: 'draft_conflict', draft: stored });
+  });
+});
+
+describe('rightsPage publish/rollback preconditions', () => {
+  it('publish and rollback send baseUpdatedAt when given (null included), and nothing extra without it', async () => {
+    const { fc, calls } = client(Array.from({ length: 5 }, () => ({ json: {} })));
+    await fc.rightsPage.publish('s1', { baseUpdatedAt: 7 });
+    await fc.rightsPage.publish('s1', { baseUpdatedAt: null });
+    await fc.rightsPage.rollback('s1', 2, { baseUpdatedAt: '2026-10-14T00:00:00.000Z' });
+    await fc.rightsPage.rollback('s1', 2);
+    await fc.rightsPage.publish('s1');
+    expect(calls.map((c) => c.body)).toEqual([
+      { baseUpdatedAt: 7 },
+      { baseUpdatedAt: null },
+      { version: 2, baseUpdatedAt: '2026-10-14T00:00:00.000Z' },
+      { version: 2 },
+      {},
+    ]);
+  });
+});
+
+describe('CookieMunchApiError', () => {
+  it('a 422 keeps its body on the error', async () => {
+    const body = { error: 'invalid_page', issues: [{ path: 'seo.favicon', message: 'must be an https:// URL' }] };
+    const { fc } = client([{ status: 422, json: body }]);
+    const err = await fc.rightsPage.dryRun('s1', {}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CookieMunchApiError);
+    expect((err as CookieMunchApiError).status).toBe(422);
+    expect((err as CookieMunchApiError).message).toBe('invalid_page');
+    expect((err as CookieMunchApiError).body).toEqual(body);
+  });
+});
