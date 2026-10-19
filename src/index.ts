@@ -17,6 +17,14 @@ import type {
   Site,
   SiteCreate,
   SiteConfig,
+  SiteUpdate,
+  SiteUpdateResult,
+  IntegrationHealthReport,
+  ProvisionRequest,
+  ProvisionResult,
+  PartnerLink,
+  PartnerLinkCreate,
+  PartnerCatalogEntry,
   ConsentDay,
   ConsentLogRow,
   RangeQuery,
@@ -40,6 +48,11 @@ export interface CookieMunchOptions {
   baseUrl: string;
   /** Injectable for tests / custom runtimes. Defaults to the global fetch. */
   fetch?: typeof fetch;
+  /**
+   * Send `Prefer: strict-unknown-fields` on every write: a body field the operation does not
+   * declare is refused (`400 unknown_field`, with `field`) instead of ignored. Catches typos.
+   */
+  strictUnknownFields?: boolean;
 }
 
 /**
@@ -98,7 +111,22 @@ export interface CategorizedCookie {
   lastSeenAt?: number;
   /** Owner views only: the site owner retired this cookie (see `sites.retireCookie`). */
   retired?: { at: number; renamedTo?: string; note?: string; by?: string; pattern?: string };
+  /** A cookie (default, also when absent) or a key in browser storage. */
+  type?: StorageType;
+  /** Where the row came from: a real visit, a crawl, the owner (`api`) or a vendor preset (`import`). */
+  source?: 'embed' | 'scan' | 'api' | 'import';
+  /** Epoch-ms it was first stored. Absent on rows from before provenance was recorded. */
+  firstSeen?: number;
+  /** Distinct visits that reported it. */
+  visits?: number;
+  /** Owner views only: reported by a real visit, but not yet by enough distinct visits to be listed publicly. */
+  quarantined?: boolean;
+  /** "Declared by <vendor>": the vendor preset that declared it. */
+  vendor?: string;
 }
+
+/** What a declaration row describes. */
+export type StorageType = 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB';
 
 /** A cookie the site owner retired: the site renamed or stopped setting it. */
 export interface RetiredCookie {
@@ -142,12 +170,69 @@ export interface DeclaredCookieInput {
   domain?: string;
   /** Treat the name as a prefix wildcard (a trailing `*` does the same). */
   pattern?: boolean;
+  /** A cookie (default) or a key in localStorage, sessionStorage or IndexedDB. */
+  type?: StorageType;
 }
 
 /** A stored declaration. */
 export interface DeclaredCookie extends DeclaredCookieInput {
   name: string;
   updatedAt: number;
+  /** `import` when a vendor preset wrote it. */
+  source?: 'import';
+  /** The vendor whose preset declared it. */
+  vendor?: string;
+}
+
+/** A platform whose cookies and storage a preset declares. */
+export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch';
+
+/** Where a vendor's live manifest will come from, and whether it exists yet. */
+export interface CookiePresetManifest {
+  status: 'builtin' | 'waiting_on_vendor';
+  waitingOn?: string;
+  item?: string;
+  contract?: string;
+}
+
+/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`; Chatly `publicId`/`dragging`/`category`. */
+export interface CookiePresetParams {
+  frontendApiHost?: string;
+  crossSubdomainCookies?: boolean;
+  publicId?: string;
+  dragging?: boolean;
+  category?: string;
+}
+
+/** One preset in GET /v1/sites/:cbid/cookies/presets. */
+export interface CookiePreset {
+  vendor: CookiePresetVendor;
+  params: Array<{ name: string; type: string; required: boolean; description?: string }>;
+  applied: boolean;
+  declared: string[];
+  manifest: CookiePresetManifest;
+}
+
+/** What applying a preset declared. */
+export interface CookiePresetResult {
+  vendor: CookiePresetVendor;
+  cookies: DeclaredCookie[];
+  removed: string[];
+  skipped?: Array<{ name: string; reason: string }>;
+  note?: string;
+  manifest: CookiePresetManifest;
+  dryRun?: true;
+  declared?: DeclaredCookie[];
+  diff?: DeclarationDiff;
+}
+
+/** What removing observed rows removed (or, with `dryRun`, would). */
+export interface ObservedPurgeResult {
+  removed: string[];
+  count: number;
+  since?: number;
+  until?: number;
+  dryRun?: true;
 }
 
 /** What a declaration write would change (`dryRun`). */
@@ -207,6 +292,8 @@ export interface ScanStatus {
   cookieCount?: number;
   keptFromEarlier?: number;
   pagesVisited?: number;
+  /** Where the site's address redirected to (its canonical host), when it did. */
+  finalUrl?: string;
   /** Why it failed. */
   error?: string;
 }
@@ -462,9 +549,12 @@ export interface RightsLinkInput {
 
 /** A signed, single-use link to the hosted rights page for one signed-in person. */
 export interface RightsLink {
+  /** `https://<customDomain>/?t=…`, or `https://cookiemunch.net/r/<cbid>?t=…` when `customDomain` is null. */
   url: string;
   /** Epoch milliseconds. */
   expiresAt: number;
+  /** The site's active custom rights-page host the link opens on, or null. */
+  customDomain: string | null;
 }
 
 /** One DNS record to create, exactly as written. */
@@ -605,6 +695,26 @@ export interface Member {
 export interface ApiKeyPrefix {
   prefix: string;
   createdAt?: number;
+  /** Epoch ms the key stops working; null = never. */
+  expiresAt?: number | null;
+  name?: string | null;
+  /** null = full access. */
+  scopes?: string[] | null;
+  cbids?: string[] | null;
+  /** Epoch ms it last authenticated a request (recorded at most hourly); null = not since recording began. */
+  lastUsedAt?: number | null;
+}
+
+/** GET /v1/keys/report — key hygiene. */
+export interface ApiKeyReport {
+  generatedAt: number;
+  unusedDays: number;
+  expiringDays: number;
+  unused: Array<ApiKeyPrefix & { reason: string }>;
+  broad: Array<ApiKeyPrefix & { reason: string }>;
+  expiringSoon: Array<ApiKeyPrefix & { reason: string }>;
+  noExpiry: number;
+  total: number;
 }
 
 /** A newly issued key. `key` is returned ONCE and never again. Returned by keys.issue(). */
@@ -643,6 +753,8 @@ export interface ApiKeyIssueInput {
   cbids?: string[];
   /** Expire the key after this many days (1–3650). */
   expiresInDays?: number;
+  /** Or when it expires: epoch ms or an ISO date-time (not with expiresInDays). Omit both: never. */
+  expiresAt?: number | string;
 }
 
 /** Org usage/quota summary. Matches the server's Usage schema. */
@@ -889,6 +1001,8 @@ export interface ApiKeyUpdate {
   name?: string;
   scopes?: string[];
   cbids?: string[];
+  /** A new expiry (epoch ms or ISO date-time), or null to remove it. */
+  expiresAt?: number | string | null;
 }
 
 /** An image to upload: base64 (or a `data:` URL) plus its type. */
@@ -1202,6 +1316,8 @@ export interface ExecutorProfile {
     body?: unknown;
     idPath: string;
     noMatch?: { statusPath: string; values: string[] };
+    /** How this system says the person was already removed; closes the task as `already_erased`. Checked before `noMatch`. */
+    alreadyErased?: { statusPath: string; values: string[] };
   };
   /** Response header carrying the system's version, recorded in the task log. Default `X-Version`. */
   versionHeader?: string;
@@ -1228,6 +1344,14 @@ export interface ExecutorProfile {
   /** That system's status words → the three answers a sub-task can have. */
   statuses: { running: string[]; done: string[]; failed: string[] };
   idempotencyHeader?: string;
+  /**
+   * An identity platform's app grant, revoked on erasure before anything else: look it up by
+   * `{email}`, then end it with `{grant}`. A test looks it up but never revokes it.
+   */
+  grantRevoke?: {
+    lookup: { method: 'GET' | 'POST'; path: string; body?: unknown; grantIdPath: string };
+    revoke: { method: 'POST' | 'DELETE'; path: string; body?: unknown };
+  };
   /** How that system signs its webhooks, if it sends any. */
   webhook?: {
     algorithm: 'hmac-sha256';
@@ -1252,9 +1376,77 @@ export interface DsarExecutor {
   hasWebhookSecret: boolean;
   /** Open a sub-task automatically when a request reaches fulfilment. */
   auto: boolean;
+  /** What the subject reads on this system's notice line when it holds nothing about them. */
+  subjectNote?: string;
   createdAt: number;
   /** Where that system should send its completion webhooks. On every connection, secret or not. */
   webhookUrl: string;
+  /**
+   * The last canary health check (hourly, and on `testExecutor(id, { canary: true })`). null
+   * until the first; cleared when the address, profile or key changes.
+   */
+  health: ExecutorHealth | null;
+  /** The preset it was built from; absent when hand-written. */
+  preset?: ExecutorPresetName;
+  presetVersion?: number;
+  /** Newer than `presetVersion`: `upgradeExecutorPreset` applies it. */
+  presetLatestVersion?: number;
+  /** The non-secret params it was built with, e.g. `{ orgId }`. */
+  presetParams?: Record<string, string>;
+  /** How the stored address and profile differ from what its preset version builds. Empty: unmodified. */
+  presetDiff?: ConfigChange[];
+}
+
+/** A connection's last canary health check. */
+export interface ExecutorHealth {
+  lastCheckedAt: number;
+  ok: boolean;
+  verdict: string;
+  /** e.g. `base_url_redirects`, `credential_unavailable`. */
+  code?: string;
+}
+
+/** A preset's name, as `executorPresets()` lists them. Not enumerated here: presets are data. */
+export type ExecutorPresetName = string;
+
+/**
+ * Connect a system from a versioned preset instead of a hand-written profile. Each preset
+ * lists the params it takes (`executorPresets()`); a preset waiting on another platform is
+ * refused with `preset_waiting_on_platform`.
+ */
+export interface DsarExecutorPresetInput {
+  preset: ExecutorPresetName;
+  presetVersion?: number;
+  secretKey: string;
+  system?: string;
+  baseUrl?: string;
+  orgId?: string;
+  atlasIdAppId?: string;
+  webhookSecret?: string;
+  auto?: boolean;
+  cbid?: string;
+}
+
+/** What `upgradeExecutorPreset` takes: a version, a preset to adopt, or params to add. */
+export interface ExecutorPresetUpgrade {
+  preset?: ExecutorPresetName;
+  presetVersion?: number;
+  orgId?: string;
+  atlasIdAppId?: string;
+}
+
+/** The presets, which are usable now, and this org's canary address. */
+export interface ExecutorPresets {
+  canaryEmail: string;
+  presets: Array<{
+    name: ExecutorPresetName;
+    title: string;
+    latestVersion: number;
+    defaultSystem?: string;
+    params: Array<{ name: string; required: boolean; description: string }>;
+    available: boolean;
+    waitingOn?: { platform: string; items: string[]; operations: string[] };
+  }>;
 }
 
 /** What a connection write would do (`?dryRun=1`). Nothing was stored. */
@@ -1314,6 +1506,8 @@ export interface DsarExecutorInput {
    */
   webhookSecret?: string;
   auto?: boolean;
+  /** What the subject reads when this system holds nothing about them (≤500 chars, never a key). */
+  subjectNote?: string;
   /** How to drive it. */
   profile: ExecutorProfile;
 }
@@ -1327,6 +1521,8 @@ export interface DsarExecutorPatch {
   secretKey?: string;
   webhookSecret?: string | null;
   auto?: boolean;
+  /** null removes it. */
+  subjectNote?: string | null;
 }
 
 /** One entry in a fulfilment task's status history. */
@@ -1341,13 +1537,13 @@ export interface DsarTaskEvent {
 }
 
 /** What a task's answer means for the person. `exported` only once the export was fetched. */
-export type DsarTaskOutcome = 'located' | 'exported' | 'erased' | 'no_record' | 'done_without_artifact' | 'not_applicable';
+export type DsarTaskOutcome = 'located' | 'exported' | 'erased' | 'no_record' | 'done_without_artifact' | 'not_applicable' | 'already_erased' | 'external_identity';
 
 /** One request made to a connected system on a task's behalf, credentials removed. Kept 30 days. */
 export interface DsarTaskLogEntry {
   id?: string;
   system?: string;
-  step: 'lookup' | 'open' | 'poll' | 'export';
+  step: 'lookup' | 'open' | 'poll' | 'export' | 'grant';
   method: string;
   path: string;
   /** Absent when the system never answered. */
@@ -1361,6 +1557,8 @@ export interface DsarTaskLogEntry {
   error?: string;
   /** The system's version header on this answer. */
   version?: string;
+  /** This answer was a redirect (origin and path; never the query). Only same-origin, method-keeping ones are followed. */
+  redirect?: { status: number; location: string };
   at: number;
 }
 
@@ -1400,12 +1598,22 @@ export interface ExecutorTestResult {
   /** One sentence: what a real request would have done. */
   verdict: string;
   ok: boolean;
+  /** Why not, when there is a code: `base_url_redirects` — the baseUrl redirected; the verdict names the status and target. */
+  code?: string;
+  /** The subject's app grant at an identity platform, when the profile has a grant step. Never revoked by a test. */
+  grant?: string;
+  /** Present when the test used the org canary address, with the address in `email`. */
+  canary?: boolean;
+  email?: string;
   /** Every upstream answer, as the system gave it (credentials removed). */
   exchanges: DsarTaskLogEntry[];
 }
 
 export interface ExecutorTestInput {
-  email: string;
+  /** The address to look up. Required unless `canary` is true. */
+  email?: string;
+  /** Use this org's canary address — no real person. A canary `locate` also updates `health`. */
+  canary?: boolean;
   /** Default `locate`. */
   operation?: 'locate' | 'export' | 'erase';
   /** For `export` only: open a real export and poll it once. An erasure is never sent. */
@@ -1460,7 +1668,18 @@ export interface CookieMunchClient {
     list(): Promise<Site[]>;
     create(input: SiteCreate): Promise<Site>;
     get(cbid: string): Promise<Site>;
+    /**
+     * Rename or move a site: domain, display name, aliases. The cbid and the consent ledger stay; a domain
+     * move clears verification. `{ dryRun: true }` answers with the diff and stores nothing.
+     */
+    update(cbid: string, patch: SiteUpdate, opts?: { dryRun?: boolean }): Promise<SiteUpdateResult>;
     delete(cbid: string): Promise<void>;
+    /** Partner platforms granted this site's consent events, and the partners on offer. */
+    listPartners(cbid: string): Promise<{ links: PartnerLink[]; partners: PartnerCatalogEntry[] }>;
+    /** Grant a partner (Forumulate, Atlas) the site's consent events — no secret is created. Idempotent. */
+    linkPartner(cbid: string, input: PartnerLinkCreate, opts?: { dryRun?: boolean }): Promise<{ change: 'created' | 'updated' | 'unchanged'; link: PartnerLink; dryRun?: true }>;
+    /** Revoke a partner link: deliveries stop at once. */
+    unlinkPartner(cbid: string, linkId: string): Promise<{ link: PartnerLink }>;
     getConfig(cbid: string): Promise<SiteConfig>;
     /**
      * Replaces the whole config — a top-level field you omit reverts to its default. With
@@ -1555,6 +1774,24 @@ export interface CookieMunchClient {
     unretireCookie(cbid: string, name: string): Promise<void>;
     /** What un-retiring would leave; nothing is removed. */
     unretireCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<{ dryRun: true; retired: RetiredCookie[] }>;
+    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch): params, what it declared here, manifest status. */
+    cookiePresets(cbid: string): Promise<{ presets: CookiePreset[] }>;
+    /**
+     * Apply (or re-sync) a vendor preset: declares what that platform writes, marked
+     * `vendor`. Names you declared yourself are kept (`skipped`). `dryRun` stores nothing.
+     */
+    applyCookiePreset(cbid: string, vendor: CookiePresetVendor, params?: CookiePresetParams, opts?: { dryRun?: boolean }): Promise<CookiePresetResult>;
+    /** Remove every declaration a vendor preset made. */
+    removeCookiePreset(cbid: string, vendor: CookiePresetVendor, opts?: { dryRun?: boolean }): Promise<{ vendor: CookiePresetVendor; removed: string[]; dryRun?: true; declared?: DeclaredCookie[]; diff?: DeclarationDiff }>;
+    /** Remove every stored (scanned or observed) row of this name. A declaration of it stays. */
+    deleteObservedCookie(cbid: string, name: string): Promise<void>;
+    /** What deleting it would remove; nothing is removed. */
+    deleteObservedCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<ObservedPurgeResult>;
+    /**
+     * Purge observed since T: remove every row a real visit first reported at or after
+     * `since` (and before `until`). Crawled rows and declarations stay. ISO-8601 or epoch ms.
+     */
+    purgeObservedCookies(cbid: string, input: { since: string | number; until?: string | number }, opts?: { dryRun?: boolean }): Promise<ObservedPurgeResult>;
     /** Remove a declaration; the scanned classification applies again. */
     undeclareCookie(cbid: string, name: string): Promise<void>;
     /** What removing a declaration would leave; nothing is removed. */
@@ -1615,7 +1852,8 @@ export interface CookieMunchClient {
      */
     get(id: string): Promise<DsarRequest>;
     create(input: DsarCreate): Promise<{ request: DsarRequest }>;
-    advance(id: string, toStatus: DsarStatus): Promise<{ request: DsarRequest }>;
+    /** `opts.messageToSubject` replaces the line the subject reads in the notice — for a rejection, why. */
+    advance(id: string, toStatus: DsarStatus, opts?: { messageToSubject?: string }): Promise<{ request: DsarRequest }>;
     /** The subject-facing response notice for a request, as plain text. */
     response(id: string): Promise<string>;
     /**
@@ -1798,7 +2036,7 @@ export interface CookieMunchClient {
      * Connect one. The secret is stored encrypted and never returned; the response carries
      * the URL to point that system's webhook at.
      */
-    connectExecutor(input: DsarExecutorInput): Promise<DsarExecutorCreated>;
+    connectExecutor(input: DsarExecutorInput | DsarExecutorPresetInput): Promise<DsarExecutorCreated>;
     /**
      * Change a connection in place. Only what you send changes, and the stored credential
      * is kept unless you pass a new `secretKey` — so adding a field to a profile does not
@@ -1806,7 +2044,16 @@ export interface CookieMunchClient {
      */
     updateExecutor(id: string, patch: DsarExecutorPatch): Promise<DsarExecutor>;
     /** What `connectExecutor` would create, validated in full; nothing is stored (`?dryRun=1`). */
-    dryRunConnectExecutor(input: DsarExecutorInput): Promise<DsarExecutorDryRun>;
+    dryRunConnectExecutor(input: DsarExecutorInput | DsarExecutorPresetInput): Promise<DsarExecutorDryRun>;
+    /** The versioned presets, whether each is usable now (or waits on another platform), and the org canary address. */
+    executorPresets(): Promise<ExecutorPresets>;
+    /**
+     * Rebuild a connection from its preset's latest version (or `presetVersion`), keeping its id
+     * and credentials; or adopt a preset on a hand-written one by naming it. Answers with `diff`.
+     */
+    upgradeExecutorPreset(id: string, input?: ExecutorPresetUpgrade): Promise<DsarExecutor & { diff: ConfigChange[]; warnings?: Array<{ field: string; reason: string }> }>;
+    /** What `upgradeExecutorPreset` would change; nothing is stored (`?dryRun=1`). */
+    dryRunUpgradeExecutorPreset(id: string, input?: ExecutorPresetUpgrade): Promise<DsarExecutorDryRun>;
     /** What `updateExecutor` would change, with a diff; the stored connection is untouched (`?dryRun=1`). */
     dryRunUpdateExecutor(id: string, patch: DsarExecutorPatch): Promise<DsarExecutorDryRun>;
     /**
@@ -1857,8 +2104,17 @@ export interface CookieMunchClient {
     roll(prefix: string): Promise<ApiKeyIssued>;
     /** Rename a key, or replace its scopes or property lock. Only the fields sent change. */
     update(prefix: string, patch: ApiKeyUpdate): Promise<{ ok: true }>;
+    /** Key hygiene: keys unused for `unusedDays` (default 90), broad keys, keys expiring within `expiringDays` (default 14). */
+    report(opts?: { unusedDays?: number; expiringDays?: number }): Promise<ApiKeyReport>;
   };
   usage(): Promise<Usage>;
+  /** Every link a site's privacy wiring depends on, one row each with `ok` and a fix hint. `cbid` may be omitted with one site. */
+  integrationHealth(cbid?: string): Promise<IntegrationHealthReport>;
+  /**
+   * Wire a product's privacy in one call: the site, connected systems, Atlas and Forumulate. Idempotent;
+   * `{ dryRun: true }` writes nothing anywhere. No secret appears in the answer.
+   */
+  provision(input: ProvisionRequest, opts?: { dryRun?: boolean }): Promise<ProvisionResult>;
   /** The key's organisation. Requires an unscoped key that is not property-locked. */
   org: {
     get(): Promise<Org>;
@@ -2003,6 +2259,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
 
   async function request(method: string, path: string, body?: unknown, raw = false): Promise<unknown> {
     const headers: Record<string, string> = { Authorization: `Bearer ${opts.apiKey}` };
+    if (opts.strictUnknownFields && method !== 'GET') headers['Prefer'] = 'strict-unknown-fields';
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -2048,9 +2305,14 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       list: () => get('/sites') as Promise<Site[]>,
       create: (input) => request('POST', '/sites', input) as Promise<Site>,
       get: (cbid) => get(`/sites/${enc(cbid)}`) as Promise<Site>,
+      update: (cbid, patch, o) => request('PATCH', `/sites/${enc(cbid)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, patch) as Promise<SiteUpdateResult>,
       delete: async (cbid) => {
         await request('DELETE', `/sites/${enc(cbid)}`);
       },
+      listPartners: (cbid) => get(`/sites/${enc(cbid)}/partners`) as Promise<{ links: PartnerLink[]; partners: PartnerCatalogEntry[] }>,
+      linkPartner: (cbid, input, o) =>
+        request('POST', `/sites/${enc(cbid)}/partners${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<{ change: 'created' | 'updated' | 'unchanged'; link: PartnerLink; dryRun?: true }>,
+      unlinkPartner: (cbid, linkId) => request('DELETE', `/sites/${enc(cbid)}/partners/${enc(linkId)}`) as Promise<{ link: PartnerLink }>,
       getConfig: (cbid) => get(`/sites/${enc(cbid)}/config`) as Promise<SiteConfig>,
       putConfig: (cbid, config, opts) =>
         request('PUT', `/sites/${enc(cbid)}/config${qs({ keep: opts?.keep })}`, config) as Promise<SiteConfig>,
@@ -2109,6 +2371,23 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         const out = await request('DELETE', `/sites/${enc(cbid)}/cookies/${enc(name)}/retire${qs({ dryRun: o?.dryRun ? '1' : undefined })}`);
         return o?.dryRun ? out : undefined;
       }) as CookieMunchClient['sites']['unretireCookie'],
+      cookiePresets: (cbid) => get(`/sites/${enc(cbid)}/cookies/presets`) as Promise<{ presets: CookiePreset[] }>,
+      applyCookiePreset: (cbid, vendor, params, o) =>
+        request('PUT', `/sites/${enc(cbid)}/cookies/presets/${enc(vendor)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, params ?? {}) as Promise<CookiePresetResult>,
+      removeCookiePreset: (cbid, vendor, o) =>
+        request('DELETE', `/sites/${enc(cbid)}/cookies/presets/${enc(vendor)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`) as Promise<{
+          vendor: CookiePresetVendor;
+          removed: string[];
+          dryRun?: true;
+          declared?: DeclaredCookie[];
+          diff?: DeclarationDiff;
+        }>,
+      deleteObservedCookie: (async (cbid: string, name: string, o?: { dryRun?: boolean }) => {
+        const out = await request('DELETE', `/sites/${enc(cbid)}/observed-cookies/${enc(name)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`);
+        return o?.dryRun ? (out as ObservedPurgeResult) : undefined;
+      }) as CookieMunchClient['sites']['deleteObservedCookie'],
+      purgeObservedCookies: (cbid, input, o) =>
+        request('POST', `/sites/${enc(cbid)}/observed-cookies/purge${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<ObservedPurgeResult>,
       undeclareCookie: (async (cbid: string, name: string, o?: { dryRun?: boolean }) => {
         const out = await request('DELETE', `/sites/${enc(cbid)}/cookies/${enc(name)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`);
         return o?.dryRun ? (out as DeclarationDryRun) : undefined;
@@ -2170,7 +2449,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       list: () => get('/dsar') as Promise<DsarRequest[]>,
       get: (id) => get(`/dsar/${enc(id)}`) as Promise<DsarRequest>,
       create: (input) => request('POST', '/dsar', input) as Promise<{ request: DsarRequest }>,
-      advance: (id, toStatus) => request('POST', `/dsar/${enc(id)}/advance`, { toStatus }) as Promise<{ request: DsarRequest }>,
+      advance: (id, toStatus, opts) =>
+        request('POST', `/dsar/${enc(id)}/advance`, { toStatus, ...(opts?.messageToSubject !== undefined ? { messageToSubject: opts.messageToSubject } : {}) }) as Promise<{ request: DsarRequest }>,
       response: (id) => request('GET', `/dsar/${enc(id)}/response`, undefined, true) as Promise<string>,
       erase: (id, cbid, stamp) => request('POST', `/dsar/${enc(id)}/erase`, { cbid, stamp }) as Promise<DsarEraseResult>,
       export: (id, cbid, stamp) => request('POST', `/dsar/${enc(id)}/export`, { cbid, stamp }) as Promise<DsarExportResult>,
@@ -2290,6 +2570,11 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       connectExecutor: (input) => request('POST', '/dsar/executors', input) as Promise<DsarExecutorCreated>,
       updateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}`, patch) as Promise<DsarExecutor>,
       dryRunConnectExecutor: (input) => request('POST', '/dsar/executors?dryRun=1', input) as Promise<DsarExecutorDryRun>,
+      executorPresets: () => get('/dsar/executors/presets') as Promise<ExecutorPresets>,
+      upgradeExecutorPreset: (id, input = {}) =>
+        request('POST', `/dsar/executors/${enc(id)}/upgrade-preset`, input) as Promise<DsarExecutor & { diff: ConfigChange[] }>,
+      dryRunUpgradeExecutorPreset: (id, input = {}) =>
+        request('POST', `/dsar/executors/${enc(id)}/upgrade-preset?dryRun=1`, input) as Promise<DsarExecutorDryRun>,
       dryRunUpdateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}?dryRun=1`, patch) as Promise<DsarExecutorDryRun>,
       testExecutorWebhook: (id, delivery) =>
         request('POST', `/dsar/executors/${enc(id)}/webhook/test`, delivery) as Promise<ExecutorWebhookTestResult>,
@@ -2322,8 +2607,11 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       },
       roll: (prefix) => request('POST', `/keys/${enc(prefix)}/roll`) as Promise<ApiKeyIssued>,
       update: (prefix, patch) => request('PATCH', `/keys/${enc(prefix)}`, patch) as Promise<{ ok: true }>,
+      report: (o) => get(`/keys/report${qs({ unusedDays: o?.unusedDays, expiringDays: o?.expiringDays })}`) as Promise<ApiKeyReport>,
     },
     usage: () => get('/usage') as Promise<Usage>,
+    integrationHealth: (cbid) => get(`/integration-health${qs({ cbid })}`) as Promise<IntegrationHealthReport>,
+    provision: (input, o) => request('POST', `/provision${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<ProvisionResult>,
     org: {
       get: () => get('/org') as Promise<Org>,
       update: (patch) => request('PATCH', '/org', patch) as Promise<Org>,

@@ -56,7 +56,108 @@ export interface Site {
   cbid: string;
   orgId: string;
   domain: string;
+  /** The business name data subjects see on the rights page, in notices and the policy. Absent: the domain is shown. */
+  name?: string;
+  /** Other hosts serving the site: accepted consent-ingest origins, never verified claims. */
+  aliases?: string[];
+  verified?: boolean;
 }
+
+/** PATCH /v1/sites/{cbid} — rename or move a site. `name: null` clears the name; `aliases: []` clears them. */
+export interface SiteUpdate {
+  domain?: string;
+  name?: string | null;
+  aliases?: string[];
+}
+
+export interface SiteUpdateResult {
+  dryRun?: true;
+  site: Site;
+  diff: Array<{ field: 'domain' | 'name' | 'aliases' | 'verified'; before: unknown; after: unknown }>;
+  effects: {
+    /** `reset`: the domain moved; verify the new one. */
+    verification: 'kept' | 'reset';
+    scanTarget: string;
+    previewDefaultUrl: string;
+    displayName: string;
+    /** Custom rights-page hostnames no longer under the domain or an alias (left in place). */
+    staleRightsDomains: string[];
+  };
+  warnings?: Array<{ field: string; reason: string }>;
+}
+
+/** One row of GET /v1/integration-health. `ok: null` = the check could not run (see `detail`). */
+export interface HealthRow {
+  check: string;
+  ok: boolean | null;
+  severity: 'error' | 'warning' | 'info';
+  subject: string;
+  fixHint?: string;
+  detail?: string;
+  lastCheckedAt: number;
+}
+export interface IntegrationHealthReport {
+  cbid: string;
+  checkedAt: number;
+  ok: boolean;
+  counts: { error: number; warning: number; notChecked: number };
+  checks: HealthRow[];
+}
+
+/** POST /v1/provision. Secrets are used for the request only and never returned. */
+export interface ProvisionRequest {
+  product: string;
+  domain: string;
+  name?: string;
+  aliases?: string[];
+  cbid?: string;
+  /** `frontendApiHost` (e.g. auth.example.com) lets provision declare Atlas's sign-in cookies on the site. */
+  atlas?: { secretKey: string; cookieConsent?: boolean; dsrWebhook?: boolean; frontendApiHost?: string };
+  forumulate?: { token: string; orgId: string; consent?: boolean; executorKey?: boolean; label?: string };
+  rightsApi?: { baseUrl: string; secretKey: string; profilePreset?: string };
+}
+export interface ProvisionStep {
+  step: string;
+  status: 'created' | 'updated' | 'unchanged' | 'would_create' | 'would_update' | 'skipped' | 'waiting' | 'failed' | 'passed';
+  detail?: string;
+  diff?: Array<{ field: string; before: unknown; after: unknown }>;
+  waitingOn?: string;
+}
+export interface ProvisionResult {
+  dryRun: boolean;
+  product: string;
+  cbid: string | null;
+  steps: ProvisionStep[];
+  summary: { changed: number; unchanged: number; waiting: number; failed: number };
+}
+
+export type PartnerId = 'forumulate' | 'atlas';
+export interface PartnerLinkCreate {
+  partner: PartnerId;
+  /** The partner's id for the receiving account (a Forumulate organisation id, an Atlas instance id). */
+  externalId: string;
+  label?: string;
+  events?: Array<'consent.recorded' | 'consent.withdrawn'>;
+}
+export interface PartnerLink {
+  id: string;
+  cbid: string;
+  partner: PartnerId;
+  externalId: string;
+  label?: string;
+  events: string[];
+  status: 'active' | 'waiting_on_partner' | 'revoked';
+  /** e.g. "Forumulate (docs) — receiving consent events". */
+  summary: string;
+  waitingOn?: string;
+  createdAt: number;
+  createdBy?: string;
+  revokedAt?: number;
+  revokedBy?: string | null;
+  lastDeliveryAt: number | null;
+  lastError: string | null;
+}
+export interface PartnerCatalogEntry { id: PartnerId; label: string; externalIdLabel: string; events: string[]; available: boolean; waitingOn?: string }
 
 export interface SiteCreate {
   domain: string;
@@ -113,7 +214,10 @@ export interface DsarRequest {
   dueAt: number;
   /** Where the subject said they are, when the intake captured it. */
   jurisdiction?: string;
+  /** INTERNAL: intake note plus the audit lines `/erase` and `/export` append. Never shown to the subject. */
   note?: string;
+  /** The line the subject reads in the response notice. */
+  messageToSubject?: string;
   /** A test request: off the SLA board, labelled, and deletable with `dsar.delete`. A closed request can be marked one with `dsar.markTest`. */
   test?: boolean;
 }
@@ -160,7 +264,10 @@ export interface DsarCreate {
    * shares one `regulation` for the deadline.
    */
   jurisdiction?: string;
+  /** INTERNAL: kept on the request, never shown to the subject. */
   note?: string;
+  /** The one free-text line the subject reads in the notice (≤2000 chars; an API key or key prefix is refused). */
+  messageToSubject?: string;
   /** The property this request belongs to; decides which connected systems answer it. */
   cbid?: string;
   /** The subject's consent-receipt id. */

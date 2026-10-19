@@ -105,3 +105,25 @@ describe('fulfillment: executor webhooks and dry runs', () => {
     expect(calls[3]!.body).toEqual({ auto: false });
   });
 });
+
+describe('fulfillment: executor presets, canary and upgrade (CKM-S-25, CKM-S-28)', () => {
+  it('lists presets, connects from one, tests with the canary and upgrades (dry run first)', async () => {
+    const { fc, calls } = client([{ canaryEmail: 'c@canary.cookiemunch.net', presets: [] }, { id: 'ex 1' }, { ok: true }, { dryRun: true }, { id: 'ex 1', diff: [] }]);
+    await fc.fulfillment.executorPresets();
+    await fc.fulfillment.connectExecutor({ preset: 'forumulate', orgId: 'org-1', secretKey: 'fck_12345678' });
+    await fc.fulfillment.testExecutor('ex 1', { canary: true });
+    await fc.fulfillment.dryRunUpgradeExecutorPreset('ex 1');
+    await fc.fulfillment.upgradeExecutorPreset('ex 1', { atlasIdAppId: 'app_1' });
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET https://api.example.com/v1/dsar/executors/presets',
+      'POST https://api.example.com/v1/dsar/executors',
+      'POST https://api.example.com/v1/dsar/executors/ex%201/test',
+      'POST https://api.example.com/v1/dsar/executors/ex%201/upgrade-preset?dryRun=1',
+      'POST https://api.example.com/v1/dsar/executors/ex%201/upgrade-preset',
+    ]);
+    expect(calls[1]!.body).toEqual({ preset: 'forumulate', orgId: 'org-1', secretKey: 'fck_12345678' });
+    expect(calls[2]!.body).toEqual({ canary: true });
+    expect(calls[3]!.body).toEqual({});
+    expect(calls[4]!.body).toEqual({ atlasIdAppId: 'app_1' });
+  });
+});
