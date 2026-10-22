@@ -42,6 +42,12 @@ import type {
   PreferenceRecord,
 } from './types.js';
 
+/**
+ * This package's version, sent in the default User-Agent. Cloudflare answers a request with
+ * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
+ */
+export const SDK_VERSION = '0.4.1';
+
 export interface CookieMunchOptions {
   apiKey: string;
   /** "https://api.cookiemunch.net" — the /v1 prefix is appended automatically. */
@@ -53,6 +59,8 @@ export interface CookieMunchOptions {
    * declare is refused (`400 unknown_field`, with `field`) instead of ignored. Catches typos.
    */
   strictUnknownFields?: boolean;
+  /** The `User-Agent` sent on every request. Default `cookiemunch-js/<version>`. */
+  userAgent?: string;
 }
 
 /**
@@ -104,9 +112,12 @@ export interface CategorizedCookie {
   /**
    * Why a person should look at it. Visitors see unclassified and category ones under
    * "Unclassified"; `retired_but_seen` = retired, but a crawl or a visit saw it since, so the
-   * site still sets it and it is listed again.
+   * site still sets it and it is listed again. `awaiting_corroboration` / `suspicious_report` =
+   * only visitors reported it (not enough of them yet, or in one injection-shaped report), owner
+   * views only; `foreign_cmp` = another consent platform's cookie, filed unclassified;
+   * `not_seen_recently` = unseen for the site's `staleAfterDays`, owner views only.
    */
-  review?: 'unclassified' | 'category_disabled' | 'category_unknown' | 'retired_but_seen';
+  review?: 'unclassified' | 'category_disabled' | 'category_unknown' | 'retired_but_seen' | 'awaiting_corroboration' | 'suspicious_report' | 'foreign_cmp' | 'not_seen_recently';
   /** Epoch-ms a crawl or a real visit last saw it. Absent on older rows. */
   lastSeenAt?: number;
   /** Owner views only: the site owner retired this cookie (see `sites.retireCookie`). */
@@ -185,7 +196,7 @@ export interface DeclaredCookie extends DeclaredCookieInput {
 }
 
 /** A platform whose cookies and storage a preset declares. */
-export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch';
+export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch' | 'referally';
 
 /** Where a vendor's live manifest will come from, and whether it exists yet. */
 export interface CookiePresetManifest {
@@ -195,13 +206,15 @@ export interface CookiePresetManifest {
   contract?: string;
 }
 
-/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`; Chatly `publicId`/`dragging`/`category`. */
+/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`; Chatly `publicId`/`dragging`/`category`; Referally `cookieDomain`/`cookieDays`/`category`. */
 export interface CookiePresetParams {
   frontendApiHost?: string;
   crossSubdomainCookies?: boolean;
   publicId?: string;
   dragging?: boolean;
   category?: string;
+  cookieDomain?: string;
+  cookieDays?: number;
 }
 
 /** One preset in GET /v1/sites/:cbid/cookies/presets. */
@@ -1774,7 +1787,7 @@ export interface CookieMunchClient {
     unretireCookie(cbid: string, name: string): Promise<void>;
     /** What un-retiring would leave; nothing is removed. */
     unretireCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<{ dryRun: true; retired: RetiredCookie[] }>;
-    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch): params, what it declared here, manifest status. */
+    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch, referally): params, what it declared here, manifest status. */
     cookiePresets(cbid: string): Promise<{ presets: CookiePreset[] }>;
     /**
      * Apply (or re-sync) a vendor preset: declares what that platform writes, marked
@@ -2258,7 +2271,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
   if (!doFetch) throw new Error('No fetch available; pass { fetch } in CookieMunchOptions.');
 
   async function request(method: string, path: string, body?: unknown, raw = false): Promise<unknown> {
-    const headers: Record<string, string> = { Authorization: `Bearer ${opts.apiKey}` };
+    const headers: Record<string, string> = { Authorization: `Bearer ${opts.apiKey}`, 'User-Agent': opts.userAgent ?? `cookiemunch-js/${SDK_VERSION}` };
     if (opts.strictUnknownFields && method !== 'GET') headers['Prefer'] = 'strict-unknown-fields';
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
