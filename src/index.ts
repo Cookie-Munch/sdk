@@ -47,7 +47,7 @@ import type {
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.5.0';
+export const SDK_VERSION = '0.5.1';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -2432,7 +2432,9 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
           const asked = Math.max(0, Math.min(60_000, left));
           const t0 = Date.now();
           const s = (await get(`/sites/${enc(cbid)}/scan${qs({ wait: asked / 1000 })}`)) as ScanStatus;
-          if (s.status !== 'scanning' || until - Date.now() <= 0) return s;
+          // Under 50 ms left, another poll can't learn anything (and a timer that fires a hair
+          // early would otherwise buy one more request at the deadline).
+          if (s.status !== 'scanning' || until - Date.now() < 50) return s;
           // A server that answered sooner than asked (one without long-polling) is not hammered.
           const early = Math.min(1000, until - Date.now()) - (Date.now() - t0);
           if (early > 0) await new Promise((r) => setTimeout(r, early));

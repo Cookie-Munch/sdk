@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.5.1 (2026-10-23)
+
+- Fixed: `sites.waitForScan` no longer sends one extra poll in the last few milliseconds before its deadline when the server answers at once.
+
 ## 0.5.0 (2026-10-23)
 
 - Added: `org.controller.get()` / `set()` / `remove()`: the organisation's own data-controller identity, named in rights-request notices filed without a `cbid`. Needs an unscoped key or the new `rights:write` scope.
