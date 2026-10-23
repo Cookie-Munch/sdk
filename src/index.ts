@@ -11,6 +11,7 @@
 export * from './types.js';
 export * from './consent.js';
 export * from './webhooks.js';
+export * from './consent-sync.js';
 import type {
   Identity,
   AccountOrgs,
@@ -46,7 +47,7 @@ import type {
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.4.1';
+export const SDK_VERSION = '0.5.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -66,8 +67,8 @@ export interface CookieMunchOptions {
 /**
  * Thrown for any non-2xx response. `message` is the server's `error` field when present;
  * `code` is populated from the server's `code` field whenever the error body carries one
- * (e.g. banner-library conflicts, docs-admin checks) — not only for scoped-key
- * (`insufficient_scope`) responses. It's `undefined` when the body has no `code`.
+ * (e.g. `forbidden` on a scope failure, whose `message` is `insufficient_scope`,
+ * or `banner_in_use` on a banner-library conflict). It's `undefined` when the body has no `code`.
  */
 export class CookieMunchApiError extends Error {
   readonly status: number;
@@ -899,6 +900,36 @@ export type RightsCaptchaProvider = 'turnstile' | 'hcaptcha' | 'recaptcha_v2' | 
  * The rights page's captcha in force: your own keys (`own`, recommended) or none (`off`, the default).
  * Cookie Munch's own captcha is never used on rights pages. The secret is never returned.
  */
+/** Whether hosted consent sync is set up for a site. The secret itself is never read back. */
+export interface ConsentSyncSecret {
+  cbid: string;
+  configured: boolean;
+  secretLast4: string | null;
+  /** Epoch ms the current secret was minted. */
+  createdAt: number | null;
+}
+
+/**
+ * Who a preference-centre token is for: a site of your organisation and exactly one of `email`
+ * (resolved as the emailed preference link resolves it) or `subjectId`.
+ */
+export type CenterTokenInput = { cbid: string; ttlSeconds?: number } & (
+  | { email: string; subjectId?: never }
+  | { subjectId: string; email?: never }
+);
+
+/** A preference-centre token. A credential: hand it to `CookieMunch.setSubjectToken`, never put it in a shared URL or a log. */
+export interface CenterToken {
+  token: string;
+  /** ISO 8601. */
+  expiresAt: string;
+}
+
+/** A freshly minted or rotated consent-sync secret: `secret` is shown this once. */
+export interface ConsentSyncSecretMinted extends ConsentSyncSecret {
+  secret: string;
+}
+
 export interface RightsCaptcha {
   /** `site`: the site's own setting; `org`: the organisation default; `default`: neither (off). */
   source: 'site' | 'org' | 'default';
@@ -982,6 +1013,26 @@ export interface RightsIdentityInput {
    * address it puts in the email claim is verified: a token without the verified claim is accepted.
    */
   trustEmailClaim?: boolean;
+}
+
+/** The organisation's own data-controller identity (GET /v1/org/controller). */
+export interface OrgControllerIdentity {
+  /** False when none is set; then only `updatedAt` (null) is present. */
+  set: boolean;
+  legalName?: string;
+  contactEmail?: string;
+  address?: string;
+  /** The Data Protection Officer: a name, an email address, or both. */
+  dpoContact?: string;
+  updatedAt: number | null;
+}
+
+/** Replaces the identity: a field left out is removed. `legalName` is required. */
+export interface OrgControllerInput {
+  legalName: string;
+  contactEmail?: string;
+  address?: string;
+  dpoContact?: string;
 }
 
 export interface MailProviderTestResult {
@@ -2098,6 +2149,16 @@ export interface CookieMunchClient {
     /** One subject's record. A subject with none has empty `purposes`. */
     get(subjectId: string): Promise<PreferenceRecord>;
   };
+  /** The hosted preference centre, opened for a visitor your server has signed in. */
+  preferenceCenter: {
+    /**
+     * Mint a preference-centre token (POST /v1/preference-center/tokens) for the page to pass to
+     * `CookieMunch.setSubjectToken`. Server-side only: the token opens that subject's subscriptions
+     * and profile until `expiresAt`. `ttlSeconds` defaults to 3600, at most 86400. Needs
+     * subscriptions:write and profile:write, plus identity:read when minting by email.
+     */
+    mintToken(input: CenterTokenInput): Promise<CenterToken>;
+  };
   members: {
     list(): Promise<Member[]>;
     invite(email: string, role: string): Promise<{ member: { userId: string; email: string; role: string } }>;
@@ -2144,6 +2205,17 @@ export interface CookieMunchClient {
       remove(): Promise<void>;
       /** Send a test through your provider. `to` defaults to the reply-to, else the from address. */
       test(to?: string): Promise<MailProviderTestResult>;
+    };
+    /**
+     * Your organisation's own data-controller identity: who every rights notice names, before any site config
+     * `controller` block. Needed for a notice on a request filed without a cbid when you have several sites.
+     * An unscoped key, or `rights:write`.
+     */
+    controller: {
+      get(): Promise<OrgControllerIdentity>;
+      /** Replace it: a field left out is removed. */
+      set(input: OrgControllerInput): Promise<OrgControllerIdentity>;
+      remove(): Promise<void>;
     };
     /**
      * The default captcha for your rights pages, for every site without its own (`rightsCaptcha`): your own
@@ -2212,6 +2284,18 @@ export interface CookieMunchClient {
    */
   rightsLinks: {
     create(cbid: string, input: RightsLinkInput): Promise<RightsLink>;
+  };
+  /**
+   * A site's consent-sync signing secret: your server signs consent-sync tokens with it
+   * (`mintConsentSyncToken`) so a visitor's decision syncs across their browsers. `rotate` mints the
+   * first one or replaces it (the old one stops at once) and is the only time the secret is returned.
+   * Reading needs sites:read; rotate and remove need sites:write and consent:write.
+   */
+  consentSyncSecret: {
+    get(cbid: string): Promise<ConsentSyncSecret>;
+    rotate(cbid: string): Promise<ConsentSyncSecretMinted>;
+    /** Turn hosted consent sync off for the site. */
+    remove(cbid: string): Promise<ConsentSyncSecret>;
   };
   /**
    * A site's rights-page captcha: your own Turnstile, hCaptcha or reCAPTCHA keys (recommended), or off. A site
@@ -2604,6 +2688,9 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       save: (subjectId, purposes) => request('POST', '/preferences', { subjectId, purposes }) as Promise<{ record: PreferenceRecord }>,
       get: (subjectId) => get(`/preferences/${enc(subjectId)}`) as Promise<PreferenceRecord>,
     },
+    preferenceCenter: {
+      mintToken: (input) => request('POST', '/preference-center/tokens', input) as Promise<CenterToken>,
+    },
     members: {
       list: () => get('/members') as Promise<Member[]>,
       invite: (email, role) =>
@@ -2635,6 +2722,13 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
           await request('DELETE', '/org/mail-provider');
         },
         test: (to) => request('POST', '/org/mail-provider/test', to ? { to } : {}) as Promise<MailProviderTestResult>,
+      },
+      controller: {
+        get: () => get('/org/controller') as Promise<OrgControllerIdentity>,
+        set: (input) => request('PUT', '/org/controller', input) as Promise<OrgControllerIdentity>,
+        remove: async () => {
+          await request('DELETE', '/org/controller');
+        },
       },
       rightsCaptcha: {
         get: () => get('/org/rights-captcha') as Promise<RightsCaptcha>,
@@ -2683,6 +2777,11 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     },
     rightsLinks: {
       create: (cbid, input) => request('POST', `/sites/${enc(cbid)}/rights-links`, input) as Promise<RightsLink>,
+    },
+    consentSyncSecret: {
+      get: (cbid) => get(`/sites/${enc(cbid)}/consent-sync-secret`) as Promise<ConsentSyncSecret>,
+      rotate: (cbid) => request('POST', `/sites/${enc(cbid)}/consent-sync-secret`) as Promise<ConsentSyncSecretMinted>,
+      remove: (cbid) => request('DELETE', `/sites/${enc(cbid)}/consent-sync-secret`) as Promise<ConsentSyncSecret>,
     },
     rightsCaptcha: {
       get: (cbid) => get(`/sites/${enc(cbid)}/rights-captcha`) as Promise<RightsCaptcha>,

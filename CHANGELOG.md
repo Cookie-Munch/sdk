@@ -2,6 +2,13 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.5.0 (2026-10-23)
+
+- Added: `org.controller.get()` / `set()` / `remove()`: the organisation's own data-controller identity, named in rights-request notices filed without a `cbid`. Needs an unscoped key or the new `rights:write` scope.
+- Added: `consentSyncSecret.get(cbid)` / `rotate(cbid)` / `remove(cbid)`: the per-site secret for hosted cross-device consent sync. `rotate` returns the secret once.
+- Added: `mintConsentSyncToken({ secret, cbid, subject, ttlSeconds })`: signs the short-lived token your server hands the page for `CookieMunch.setSyncToken()`. It runs locally with no request.
+- Added: `preferenceCenter.mintToken({ cbid, email | subjectId, ttlSeconds })`: mints the preference-centre token a signed-in visitor's page passes to `CookieMunch.setSubjectToken()`.
+
 ## 0.4.1 (2026-10-22)
 
 - Added: the `referally` cookie preset (`cookieDomain`, `cookieDays`, `category` parameters on `applyCookiePreset`).

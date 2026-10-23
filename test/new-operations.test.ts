@@ -173,6 +173,40 @@ describe('org.mailProvider — bring your own mail provider for rights mail', ()
   });
 });
 
+describe('org.controller — the organisation’s own data-controller identity', () => {
+  it('get / set / remove with the right verb, path and body', async () => {
+    const view = { set: true, legalName: 'Crossly Ltd', contactEmail: 'privacy@crossly.example', updatedAt: 1 };
+    const { fc, calls } = client([{ json: view }, { json: view }, { status: 204 }]);
+    expect((await fc.org.controller.get()).set).toBe(true);
+    await fc.org.controller.set({ legalName: 'Crossly Ltd', contactEmail: 'privacy@crossly.example' });
+    await fc.org.controller.remove();
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET https://api.example.com/v1/org/controller',
+      'PUT https://api.example.com/v1/org/controller',
+      'DELETE https://api.example.com/v1/org/controller',
+    ]);
+    expect(calls[1]?.body).toEqual({ legalName: 'Crossly Ltd', contactEmail: 'privacy@crossly.example' });
+  });
+});
+
+describe('consentSyncSecret — the site’s consent-sync signing secret', () => {
+  it('get / rotate / remove with the right verb and path', async () => {
+    const { fc, calls } = client([
+      { json: { cbid: 's 1', configured: false, secretLast4: null, createdAt: null } },
+      { status: 201, json: { cbid: 's1', configured: true, secretLast4: 'abcd', createdAt: 1, secret: 'cmss_x_abcd' } },
+      { json: { cbid: 's1', configured: false, secretLast4: null, createdAt: null } },
+    ]);
+    expect((await fc.consentSyncSecret.get('s 1')).configured).toBe(false);
+    expect((await fc.consentSyncSecret.rotate('s1')).secret).toBe('cmss_x_abcd');
+    await fc.consentSyncSecret.remove('s1');
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET https://api.example.com/v1/sites/s%201/consent-sync-secret',
+      'POST https://api.example.com/v1/sites/s1/consent-sync-secret',
+      'DELETE https://api.example.com/v1/sites/s1/consent-sync-secret',
+    ]);
+  });
+});
+
 describe('rightsCaptcha — the rights page’s captcha: your own keys, or off', () => {
   it('site and org default: get / set / remove with the right verb and path', async () => {
     const { fc, calls } = client(Array.from({ length: 6 }, () => ({ json: { source: 'site', mode: 'off', secretSet: false, status: 'disabled', verifiedAt: null, updatedAt: 1 } })));
