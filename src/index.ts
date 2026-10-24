@@ -59,7 +59,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.7.0';
+export const SDK_VERSION = '0.7.1';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -1158,9 +1158,16 @@ export interface ConsentInsights {
   byRegion: Array<{ region: string; decisions: number; optIns: number; optInRate: number | null }>;
   byVariant: Array<{ variant: string; impressions: number; optIns: number; optInRate: number | null }>;
   byVariantWindow: 'all_time';
-  byLanguage: null;
-  timeToDecision: null;
-  notRecorded: { byLanguage: string; timeToDecision: string };
+  /** Decisions made on a banner, by the language it was shown in; null when none in the window. */
+  byLanguage: Array<{ language: string; decisions: number; optIns: number; optInRate: number | null }> | null;
+  /** How long after the banner appeared visitors decided, as a histogram; null when none in the window. */
+  timeToDecision: {
+    decisions: number;
+    buckets: Array<{ upToSeconds: number | null; count: number }>;
+    median: { fromSeconds: number; upToSeconds: number | null } | null;
+  } | null;
+  /** Present for a figure with nothing recorded in the window, saying why. */
+  notRecorded?: { byLanguage?: string; timeToDecision?: string };
 }
 
 /** One cookie read from another CMP's export. */

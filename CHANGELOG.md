@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.7.1 (2026-10-24)
+
+- Changed: `ConsentInsights.byLanguage` and `timeToDecision` are now filled in — opt-in by the banner's language, and a time-to-decision histogram with its median bucket — or `null` with `notRecorded` saying why.
+
 ## 0.7.0 (2026-10-24)
 
 - Added: `sandbox.get` / `create` / `delete` — a sandbox organisation made from yours: the same people and plan, never billed, test keys only, every rights request a test.
