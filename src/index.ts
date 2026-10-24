@@ -13,6 +13,7 @@ export * from './consent.js';
 export * from './webhooks.js';
 export * from './consent-sync.js';
 export * from './executor-conformance.js';
+export * from './token-exchange.js';
 export type * from './fd-consent.js';
 import type {
   CategoryRegistry,
@@ -58,7 +59,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.6.0';
+export const SDK_VERSION = '0.7.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -73,6 +74,11 @@ export interface CookieMunchOptions {
   strictUnknownFields?: boolean;
   /** The `User-Agent` sent on every request. Default `cookiemunch-js/<version>`. */
   userAgent?: string;
+  /**
+   * Serve every request under this dated API version (`CookieMunch-Version`, e.g. `'2026-10-24'`) instead of the
+   * one your key is pinned to. `versions()` lists them; `keys.updateSelf({ apiVersion })` re-pins the key.
+   */
+  apiVersion?: string;
   /**
    * Seal every once-shown secret to this X25519 public key (`x25519:<base64>`): answers carry `sealed_secret`
    * (a libsodium sealed box) and `sealed_field` instead of the plaintext. Sent as `X-Secret-Recipient` on writes.
@@ -964,6 +970,22 @@ export interface ApiKeyPrefix {
   env?: 'live' | 'test' | null;
   format?: 'cookiemunch' | 'legacy';
   strictUnknownFields?: boolean;
+  /** The dated API version this key is pinned to. */
+  apiVersion?: string;
+}
+
+/** A live organisation's sandbox (GET /v1/sandbox). */
+export interface SandboxOrg { orgId: string; name: string; sandboxOf: string; createdAt: string }
+/** POST /v1/sandbox: the sandbox and a test key for it, shown once. */
+export interface SandboxCreated { sandbox: SandboxOrg; created: boolean; key: string; keyPrefix: string; keyExpiresAt: string }
+
+/** GET /v1/versions. */
+export interface ApiVersions {
+  latest: string;
+  base: string;
+  /** With a key: the version it is pinned to. */
+  yours?: string;
+  versions: Array<{ version: string; summary: string; changes: Array<{ id: string; summary: string; docs: string }> }>;
 }
 
 /** A revoked key in the report: when, by whom, why; never the secret. */
@@ -2674,6 +2696,8 @@ export interface CookieMunchClient {
     listStandard(): Promise<StandardKeyList>;
     /** The calling key itself, whatever its scopes: check its own expiry. */
     self(): Promise<ApiKeyPrefix>;
+    /** Re-pin the calling key to another dated API version. Any key may, for itself. */
+    updateSelf(input: { apiVersion: string }): Promise<ApiKeyPrefix>;
     /** The calling key rotates itself; the old secret stops at once. Use a client with an Idempotency-Key header. */
     rollSelf(): Promise<ApiKeyIssued>;
     /** A short-lived key (ttlSeconds at most 43200) within this key's own scopes and properties. Needs keys:write or full access. */
@@ -2682,8 +2706,22 @@ export interface CookieMunchClient {
     revokeLeaked(report: LeakReport): Promise<{ received: number }>;
   };
   usage(): Promise<Usage>;
+  /** The dated API versions, what each changed, and the one this key is pinned to (`yours`). */
+  versions(): Promise<ApiVersions>;
   /** What the org may use: every plan feature (`whiteLabel`, `tcf`, …) and limit, in the suite-standard shape. Any key may read it. */
   entitlements(): Promise<Entitlements>;
+  /**
+   * The organisation's sandbox: a separate test organisation with the same people and plan features, never billed.
+   * Its keys are test-format keys and its rights requests are all tests. `create` and `delete` need an unscoped key or `orgs:create`.
+   */
+  sandbox: {
+    /** The sandbox, or null. From a sandbox key, the sandbox itself. */
+    get(): Promise<SandboxOrg | null>;
+    /** Make the sandbox (or return the existing one, `created: false`) with a new test key for it. */
+    create(input?: { keyName?: string }): Promise<SandboxCreated>;
+    /** Erase the sandbox entirely. Cannot be undone; the live organisation is not touched. */
+    delete(): Promise<SandboxPurge>;
+  };
   /** Every link a site's privacy wiring depends on, one row each with `ok` and a fix hint. `cbid` may be omitted with one site. */
   integrationHealth(cbid?: string): Promise<IntegrationHealthReport>;
   /** Waive a health check you chose not to meet: the row reports `ok: null` with `waived`. Audited. */
@@ -2895,6 +2933,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
   async function request(method: string, path: string, body?: unknown, raw = false, extraHeaders: Record<string, string> = {}): Promise<unknown> {
     const headers: Record<string, string> = { Authorization: `Bearer ${opts.apiKey}`, 'User-Agent': opts.userAgent ?? `cookiemunch-js/${SDK_VERSION}`, ...extraHeaders };
     if (opts.strictUnknownFields && method !== 'GET') headers['Prefer'] = 'strict-unknown-fields';
+    if (opts.apiVersion) headers['CookieMunch-Version'] = opts.apiVersion;
     if (opts.secretRecipient && method !== 'GET') headers['X-Secret-Recipient'] = opts.secretRecipient;
     for (const [k, v] of Object.entries(opts.headers ?? {})) headers[k] = v;
     const init: RequestInit = { method, headers };
@@ -3306,12 +3345,19 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       report: (o) => get(`/keys/report${qs({ unusedDays: o?.unusedDays, expiringDays: o?.expiringDays })}`) as Promise<ApiKeyReport>,
       listStandard: () => get('/keys?shape=standard') as Promise<StandardKeyList>,
       self: () => get('/keys/self') as Promise<ApiKeyPrefix>,
+      updateSelf: (input) => request('PATCH', '/keys/self', input) as Promise<ApiKeyPrefix>,
       rollSelf: () => request('POST', '/keys/self/roll') as Promise<ApiKeyIssued>,
       vend: (input) => request('POST', '/keys/vend', input) as Promise<ApiKeyVended>,
       revokeLeaked: (report) => request('POST', '/keys/revoke_leaked', report) as Promise<{ received: number }>,
     },
     usage: () => get('/usage') as Promise<Usage>,
     entitlements: () => get('/entitlements') as Promise<Entitlements>,
+    versions: () => get('/versions') as Promise<ApiVersions>,
+    sandbox: {
+      get: async () => ((await get('/sandbox')) as { sandbox: SandboxOrg | null }).sandbox,
+      create: (input) => request('POST', '/sandbox', input ?? {}) as Promise<SandboxCreated>,
+      delete: () => request('DELETE', '/sandbox') as Promise<SandboxPurge>,
+    },
     integrationHealth: (cbid) => get(`/integration-health${qs({ cbid })}`) as Promise<IntegrationHealthReport>,
     healthWaivers: {
       list: (cbid) => get(`/integration-health/waivers${qs({ cbid })}`) as Promise<{ cbid: string; waivers: HealthWaiver[] }>,

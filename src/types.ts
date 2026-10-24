@@ -25,6 +25,10 @@ export interface Identity {
   propertyLocked?: boolean;
   cbids?: string[];
   reseller?: boolean;
+  /** This organisation is a sandbox (`sandbox.create()`): test keys, test rights requests, never billed. */
+  sandbox?: boolean;
+  /** For a sandbox: the live organisation it belongs to. */
+  sandboxOf?: string;
 }
 
 export type PlanSource = 'org' | 'account';

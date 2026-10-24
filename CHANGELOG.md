@@ -2,6 +2,13 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.7.0 (2026-10-24)
+
+- Added: `sandbox.get` / `create` / `delete` — a sandbox organisation made from yours: the same people and plan, never billed, test keys only, every rights request a test.
+- Added: dated API versions — the `apiVersion` client option (sends `CookieMunch-Version`), `versions()`, and `keys.updateSelf({ apiVersion })`. Keys minted from 2026-10-24 are strict about unknown body fields by default; older keys behave as before.
+- Added: `exchangeOperatorToken()` — swap an identity provider's token for a key that lasts at most an hour (RFC 8693 token exchange).
+- Added: `sandbox` and `sandboxOf` on `me()`.
+
 ## 0.6.0 (2026-10-24)
 
 - Added: `dsar.openCase` / `getCase` / `cancelCase` / `caseReceipt` / `caseReceiptPdf` / `listByTrace` — rights cases fanned out to every connected system, with one `executeAfter`, a trace and a signed receipt.
