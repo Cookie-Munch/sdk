@@ -323,3 +323,39 @@ describe('CookieMunchApiError', () => {
     expect((err as CookieMunchApiError).body).toEqual(body);
   });
 });
+
+describe('orchestrator-v2 cases (CMU-X21–X24, X37)', () => {
+  it('openCase sends the Idempotency-Key and X-ForgeDeck-Trace headers', async () => {
+    const { fc: cm, calls } = client([{ status: 201, json: { id: 'dsr_1' } }]);
+    await cm.dsar.openCase({ cbid: 's1', type: 'closure', subject: { emails: ['a@b.com'] }, source: 'product' }, { idempotencyKey: 'key-0000000000000001', trace: '01J9ZK3Q7X5R2T8M4N6P0B1C2D' });
+    expect(calls[0]).toMatchObject({ method: 'POST', body: { cbid: 's1', type: 'closure' } });
+    expect(calls[0]!.url).toMatch(/\/v1\/dsar\/requests$/);
+    expect(calls[0]!.headers['idempotency-key']).toBe('key-0000000000000001');
+    expect(calls[0]!.headers['x-forgedeck-trace']).toBe('01J9ZK3Q7X5R2T8M4N6P0B1C2D');
+  });
+
+  it('reaches every new path', async () => {
+    const { fc: cm, calls } = client(Array.from({ length: 9 }, () => ({ json: {} })));
+    await cm.dsar.getCase('d 1');
+    await cm.dsar.cancelCase('d1');
+    await cm.dsar.caseReceipt('d1');
+    await cm.dsar.listByTrace('T1');
+    await cm.fulfillment.executorConformance('ex1');
+    await cm.fulfillment.rollExecutorCompletionSecret('ex1');
+    await cm.dsarSettings.set('s1', { graceDays: 14 });
+    await cm.dsarSettings.get('s1');
+    await cm.integrations.subjectCard('chatly', { iss: 'https://i.example', sub: 'u1' });
+    expect(calls.map((c) => `${c.method} ${new URL(c.url).pathname}${new URL(c.url).search}`)).toEqual([
+      'GET /v1/dsar/requests/d%201',
+      'POST /v1/dsar/requests/d1/cancel',
+      'GET /v1/dsar/requests/d1/receipt',
+      'GET /v1/dsar?trace=T1',
+      'POST /v1/dsar/executors/ex1/test',
+      'POST /v1/dsar/executors/ex1/completion-secret/roll',
+      'PUT /v1/sites/s1/dsar-settings',
+      'GET /v1/sites/s1/dsar-settings',
+      'GET /v1/integrations/chatly/card?iss=https%3A%2F%2Fi.example&sub=u1',
+    ]);
+    expect(calls[4]!.body).toEqual({ conformance: true });
+  });
+});

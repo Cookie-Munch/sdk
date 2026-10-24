@@ -12,7 +12,10 @@ export * from './types.js';
 export * from './consent.js';
 export * from './webhooks.js';
 export * from './consent-sync.js';
+export * from './executor-conformance.js';
+export type * from './fd-consent.js';
 import type {
+  CategoryRegistry,
   Identity,
   AccountOrgs,
   Site,
@@ -21,6 +24,8 @@ import type {
   SiteUpdate,
   SiteUpdateResult,
   IntegrationHealthReport,
+  HealthWaiver,
+  HealthWaiverInput,
   ProvisionRequest,
   ProvisionResult,
   PartnerLink,
@@ -32,6 +37,11 @@ import type {
   LogQuery,
   DsarRequest,
   DsarCreate,
+  DsarCase,
+  DsarCaseCreate,
+  DsarCaseReceipt,
+  DsarSettings,
+  SubjectCard,
   DsarStatus,
   ScoredVendor,
   VendorInput,
@@ -42,12 +52,13 @@ import type {
   SignedReceipt,
   PreferenceRecord,
 } from './types.js';
+import type { ConformanceReport } from './executor-conformance.js';
 
 /**
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.5.1';
+export const SDK_VERSION = '0.6.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -62,7 +73,86 @@ export interface CookieMunchOptions {
   strictUnknownFields?: boolean;
   /** The `User-Agent` sent on every request. Default `cookiemunch-js/<version>`. */
   userAgent?: string;
+  /**
+   * Seal every once-shown secret to this X25519 public key (`x25519:<base64>`): answers carry `sealed_secret`
+   * (a libsodium sealed box) and `sealed_field` instead of the plaintext. Sent as `X-Secret-Recipient` on writes.
+   */
+  secretRecipient?: string;
+  /**
+   * Extra headers on every request, e.g. `{ 'Idempotency-Key': '<forgedeck ref>:<run>' }` on a client made for
+   * one create: a retry with the same key replays the first answer (secrets included) for 24 hours.
+   */
+  headers?: Record<string, string>;
 }
+
+/** Tags on a created resource (CMU-X29). `forgedeck_sandbox: true` can only be set at creation. */
+export type ResourceMetadata = Record<string, string | number | boolean>;
+/** Keep only resources whose tags match, e.g. `{ forgedeck_product: 'referalli' }`. */
+export interface MetadataFilter { metadata?: Record<string, string> }
+/** externalRef and metadata, accepted by every create (orgs, sites, webhooks, executors, DSARs, partner links). */
+export interface ResourceTagsInput {
+  /** Your own name for it, unique per org and type: a repeat create with the same body returns the existing one. */
+  externalRef?: string;
+  metadata?: ResourceMetadata;
+}
+export type TaggedType = 'org' | 'site' | 'webhook' | 'executor' | 'dsar' | 'partner_link';
+export interface ResourceTags { type: TaggedType; id: string; metadata: ResourceMetadata; externalRef: string | null; sandbox: boolean }
+export interface ResourceTagsUpdate { dryRun?: true; type: TaggedType; id: string; metadata: ResourceMetadata; diff: Array<{ field: string; before: unknown; after: unknown }> }
+/** What a sandbox hard delete removed. */
+export interface SandboxPurge { deleted: true; cbid?: string; orgId?: string; counts: Record<string, number> }
+/** A partner link in the suite-standard shape (CMU-X34). */
+export interface StandardPartnerLink {
+  id: string;
+  partner: string;
+  resource: string;
+  scopes: string[];
+  created_at: string | null;
+  expires_at: string | null;
+  last_used_at: string | null;
+  calls_30d: number;
+  status: 'active' | 'waiting_on_partner' | 'revoked' | 'expired';
+  externalId?: string;
+  label?: string;
+}
+export interface StandardPartnerLinkCreate extends ResourceTagsInput {
+  partner: string;
+  /** `site:<cbid>` or `org:<org id>`. */
+  resource: string;
+  scopes: Array<'consent:read' | 'receipt:read' | 'dsar:read' | 'dsar:write' | 'dsar:rights-links' | 'sites:read'>;
+  expires_at?: string;
+  externalId?: string;
+  label?: string;
+}
+/** POST /v1/provision v2: the `cookiemunch` block of a forgedeck.yaml (see the forgedeck API map page). */
+export interface ProvisionRequestV2 {
+  forgedeck: { ref?: string; product: string; env?: string; sandbox?: boolean };
+  site: { domain: string; name?: string; aliases?: string[]; locales?: string[]; preset?: string; devOrigins?: string[] };
+  cbid?: string;
+  categories?: string[];
+  rightsIdentity?: Record<string, unknown>;
+  dsar?: { graceDays?: number };
+  atlas?: { instanceId?: string; secretKey?: string; cookieConsent?: boolean; executor?: boolean; frontendApiHost?: string };
+  forumulate?: { org?: string; orgId?: string; token?: string; consent?: boolean; executor?: boolean; label?: string };
+  chatly?: { workspace?: string; publicId?: string; vendorHook?: boolean; executor?: boolean };
+  self?: { baseUrl: string; contract?: string; secret: string };
+  referalli?: { orgId?: string; trackingToken?: string; preset?: boolean; partner?: boolean; executor?: string | boolean };
+  embedManifests?: string | string[];
+  brand?: { url?: string };
+}
+/** GET /v1/provision/env: names, non-secret values, and references for secrets. */
+export interface ProvisionEnv { ref: string; cbid: string; env: Array<{ name: string; value?: string; secretRef?: string }> }
+/** A vended short-lived key, shown once. */
+export interface ApiKeyVended { key: string; prefix: string; expiresAt: number; scopes: string[]; cbids: string[] | null }
+/** The suite-standard key listing (GET /v1/keys?shape=standard). */
+export interface StandardKeyList {
+  keys: Array<{
+    id: string; prefix: string; name: string | null; owner: string | null; kind: string | null; env: string | null; format: string | null;
+    scopes: string[] | null; resources: string[] | null; created_at: string | null; expires_at: string | null;
+    last_used_at: string | null; last_used_ip: string | null; status: 'active' | 'expired';
+  }>;
+}
+/** A leaked secret to revoke (POST /v1/keys/revoke_leaked, no authentication needed). */
+export type LeakReport = { key: string; source?: string } | { keys: string[]; source?: string };
 
 /**
  * Thrown for any non-2xx response. `message` is the server's `error` field when present;
@@ -197,17 +287,71 @@ export interface DeclaredCookie extends DeclaredCookieInput {
 }
 
 /** A platform whose cookies and storage a preset declares. */
-export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch' | 'referally';
+export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch' | 'referalli' | 'firstpromoter' | 'partnerstack' | 'tapfiliate' | 'impact'
+  /** @deprecated the old name of `referalli`, accepted until 2027-10-23. */
+  | 'referally';
 
 /** Where a vendor's live manifest will come from, and whether it exists yet. */
 export interface CookiePresetManifest {
-  status: 'builtin' | 'waiting_on_vendor';
+  /** `live`/`stale`/`invalid`: the vendor's embed manifest feeds the preset; `waiting_on_vendor`: built-in rows. */
+  status: 'builtin' | 'live' | 'stale' | 'invalid' | 'waiting_on_vendor';
   waitingOn?: string;
   item?: string;
   contract?: string;
+  /** Where the manifest is read from, or `upload`. */
+  source?: string;
+  /** The `updated` of the copy in effect. */
+  updated?: string;
+  fetchedAt?: number;
+  /** Why the latest read was not accepted, by rule (1–6). */
+  errors?: Array<{ rule?: number; path?: string; code?: string; message: string }>;
+  warnings?: Array<{ rule?: number; path?: string; code?: string; message: string }>;
 }
 
-/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`; Chatly `publicId`/`dragging`/`category`; Referally `cookieDomain`/`cookieDays`/`category`. */
+/** PUT /v1/sites/:cbid/cookies/presets/custom — any vendor's embed manifest, by URL or as a body. */
+export type CustomPresetInput = ({ url: string; manifest?: never } | { manifest: EmbedManifest; url?: never }) & {
+  /** Values for the manifest's `{placeholders}`. */
+  params?: Record<string, string>;
+};
+
+/** One suggestion in GET /v1/sites/:cbid/cookies/suggestions. */
+export interface CookieSuggestion {
+  name: string;
+  storage: 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB';
+  foundOnPages: string[];
+  /** `denied`: a crawl saw it before any consent; `granted`: after accepting all. */
+  consentStates?: Array<'denied' | 'granted'>;
+  suggestedPreset?: string;
+  suggestedCategory: string;
+  confidence: 'high' | 'medium' | 'low';
+  purpose?: string;
+  reason: string;
+}
+
+/** GET /v1/sites/:cbid/cookies/suggestions */
+export interface CookieSuggestions {
+  suggestions: CookieSuggestion[];
+  vendors: Array<{
+    vendor: string;
+    display: string;
+    preset: string | null;
+    applied: boolean;
+    needsParams: boolean;
+    evidence: Array<{ kind: 'script' | 'storage' | 'manifest'; value: string; pages?: string[] }>;
+  }>;
+}
+
+/** POST /v1/sites/:cbid/cookies/suggestions/declare */
+export interface CookieSuggestionsDeclared {
+  presetsApplied: string[];
+  declaredCount: number;
+  skipped?: Array<{ name: string; reason: string }>;
+  dryRun?: true;
+  declared?: DeclaredCookie[];
+  diff?: DeclarationDiff;
+}
+
+/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`; Chatly `publicId`/`dragging`/`category`; referral and affiliate presets (referalli, firstpromoter, partnerstack, tapfiliate, impact) `cookieDomain`/`cookieDays`/`category`, referalli `legacyName`, impact `campaignId`. */
 export interface CookiePresetParams {
   frontendApiHost?: string;
   crossSubdomainCookies?: boolean;
@@ -216,11 +360,61 @@ export interface CookiePresetParams {
   category?: string;
   cookieDomain?: string;
   cookieDays?: number;
+  /** referalli: default true, also declare referally_ctx (the pre-rename copy aff.js still writes). */
+  legacyName?: boolean;
+  /** impact: your program id; declares IR_<campaignId> too. */
+  campaignId?: string;
+}
+
+/** One browser key a surface writes, in an embed manifest. */
+export interface EmbedManifestStorage {
+  name: string;
+  type: 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB';
+  category: string;
+  /** `session`, `persistent` or a duration such as `365d`. */
+  lifetime?: string;
+  /** By language; `en` is always there. */
+  purpose: Record<string, string>;
+  domain?: string;
+  sentTo?: string;
+}
+
+/** One embeddable surface in an embed manifest: its origins by CSP directive and its storage. */
+export interface EmbedManifestSurface {
+  /** Origins by CSP directive (`script-src`, `connect-src`, …). */
+  csp?: Record<string, string[]>;
+  /** Non-origin sources the surface needs (`'unsafe-inline'`, `data:`). */
+  requires?: Record<string, string[]>;
+  trustedTypes?: string[];
+  consentCategory?: string;
+  storage?: EmbedManifestStorage[];
+  sri?: Record<string, string>;
+}
+
+/** The shared embed/origins manifest (https://cookiemunch.net/schemas/embed-v1.json). */
+export interface EmbedManifest {
+  schema: string;
+  product: string;
+  updated: string;
+  openapi?: string;
+  llms?: string;
+  status?: string;
+  changelog?: string;
+  docs?: string;
+  checkers?: { userAgent?: string; egress?: string[]; agents?: Array<{ role: string; userAgent?: string; userAgentContains?: string; description?: string }> };
+  surfaces: Record<string, EmbedManifestSurface>;
+  changes?: Array<{ effective: string; surface: string; add?: Record<string, string[]>; remove?: Record<string, string[]>; note?: string }>;
+  /** The tenant variant only: the site and its hosts. */
+  tenant?: { cbid: string; siteHosts: string[]; rightsPage: string; preferenceCentre: string };
 }
 
 /** One preset in GET /v1/sites/:cbid/cookies/presets. */
 export interface CookiePreset {
-  vendor: CookiePresetVendor;
+  /** A first-class preset, or a custom preset's product id. */
+  vendor: CookiePresetVendor | (string & {});
+  /** A custom preset (importCookieManifest). */
+  custom?: boolean;
+  url?: string;
   params: Array<{ name: string; type: string; required: boolean; description?: string }>;
   applied: boolean;
   declared: string[];
@@ -229,11 +423,20 @@ export interface CookiePreset {
 
 /** What applying a preset declared. */
 export interface CookiePresetResult {
-  vendor: CookiePresetVendor;
+  vendor: CookiePresetVendor | (string & {});
+  /** `manifest` when the rows came from the vendor's embed manifest. */
+  source?: 'manifest';
   cookies: DeclaredCookie[];
   removed: string[];
   skipped?: Array<{ name: string; reason: string }>;
   note?: string;
+  /** Rows filed under a category this site has switched off (`cookies[<name>].category`). */
+  warnings?: Array<{ field: string; reason: string }>;
+  /** With `warnings`: a body for `sites.patchConfig` that fixes them; apply the preset again after. */
+  suggestedConfigPatch?: Record<string, unknown>;
+  /** True when called with the deprecated name `referally`. */
+  deprecated?: true;
+  deprecatedAlias?: string;
   manifest: CookiePresetManifest;
   dryRun?: true;
   declared?: DeclaredCookie[];
@@ -296,8 +499,8 @@ export interface ScanStatus {
   lastScannedAt: number | null;
   /** What the last scan saw of the live banner's Accept all / Reject all. Absent until measured. */
   buttonParity?: ButtonParityScan;
-  /** Where the last scan is. Absent when the site was never scanned. */
-  state?: 'queued' | 'scanning' | 'done' | 'failed';
+  /** Where the last scan is: `idle` when the site was never scanned (older servers left it out). */
+  state?: 'idle' | 'queued' | 'scanning' | 'done' | 'failed';
   scanId?: string;
   startedAt?: number;
   finishedAt?: number;
@@ -441,7 +644,10 @@ export interface ButtonParityFinding {
     | 'reject_missing_first_layer' | 'reject_missing_same_layer' | 'reject_hidden' | 'reject_below_fold' | 'reject_isolated'
     | 'reject_low_emphasis' | 'saturation_gap' | 'color_mismatch' | 'reject_text_low_contrast' | 'reject_styled_as_link'
     | 'font_size_gap' | 'font_weight_gap' | 'size_gap' | 'padding_gap' | 'border_mismatch' | 'reject_label_missing'
-    | 'reject_label_long' | 'confirmshaming' | 'custom_css_asymmetric';
+    | 'reject_label_long' | 'confirmshaming' | 'custom_css_asymmetric'
+    // WCAG contrast findings (each carries `wcag`).
+    | 'text_low_contrast' | 'link_low_contrast' | 'button_text_low_contrast' | 'focus_ring_low_contrast'
+    | 'toggle_low_contrast' | 'control_boundary_low_contrast';
   severity: 'warning' | 'notice';
   layer: 'banner' | 'preferences' | 'modal' | 'popup' | 'bar' | 'inline' | 'custom';
   accept: ParityControlSummary | null;
@@ -450,6 +656,8 @@ export interface ButtonParityFinding {
   detail: string;
   fix: string;
   where: { view?: string; variant?: string; theme?: 'light' | 'dark'; breakpoint?: 'desktop' | 'mobile'; language?: string; url?: string };
+  /** On a contrast finding: the WCAG success criterion (1.4.3 text, 1.4.11 non-text). */
+  wcag?: '1.4.3' | '1.4.11';
 }
 
 /** Reject all style values that would match the Accept all on the same layer. */
@@ -645,6 +853,37 @@ export interface BrandExtractionResult {
   suggestion: BrandSuggestion;
 }
 
+/** PUT /v1/sites/{cbid}/brand: `{url}` alone (fetched once, https only), or a DTCG brand.json document. */
+export type BrandImportInput = { url: string } | Record<string, unknown>;
+
+/** One brand.json role and what it became. */
+export interface BrandMappingRow {
+  role: string;
+  /** The site-config path it sets, e.g. `banner.theme.highlight`. */
+  target: string;
+  value: string | number;
+  /** The rights-page theme token the same value feeds. */
+  rightsPage?: string;
+  /** `site` when the site's own banner theme value wins over brand.json. */
+  source: 'brand.json' | 'site';
+  inForce?: string | number;
+  /** Variants that override it for some visitors. */
+  variants?: string[];
+}
+
+/** The read-back of a brand.json import. Precedence: brand.json < site banner theme < per-banner variant. */
+export interface BrandReadBack {
+  cbid: string;
+  dryRun?: boolean;
+  source: { type: 'url'; url: string } | { type: 'body' };
+  importedAt: number;
+  precedence: string;
+  mapping: BrandMappingRow[];
+  ignored: Array<{ role: string; reason: string }>;
+  warnings: Array<{ role: string; code: 'third_party_font_host'; message: string }>;
+  configWarnings?: Array<{ field: string; reason: string }>;
+}
+
 /** A validation/lint issue on a v2 banner flow. */
 export interface FlowIssue {
   code: string;
@@ -717,6 +956,31 @@ export interface ApiKeyPrefix {
   cbids?: string[] | null;
   /** Epoch ms it last authenticated a request (recorded at most hourly); null = not since recording began. */
   lastUsedAt?: number | null;
+  /** The address of that request. */
+  lastUsedIp?: string | null;
+  /** `user:<id>`, `service:<name>` or `apikey:<prefix>`. */
+  owner?: string | null;
+  kind?: 'org' | 'site' | null;
+  env?: 'live' | 'test' | null;
+  format?: 'cookiemunch' | 'legacy';
+  strictUnknownFields?: boolean;
+}
+
+/** A revoked key in the report: when, by whom, why; never the secret. */
+export interface ApiKeyRevoked {
+  prefix: string;
+  name: string | null;
+  owner: string | null;
+  scopes: string[] | null;
+  cbids: string[] | null;
+  createdAt: number;
+  expiresAt: number | null;
+  lastUsedAt: number | null;
+  lastUsedIp: string | null;
+  revokedAt: number;
+  revokedBy: string;
+  reason: 'revoked' | 'rolled' | 'leaked';
+  leakSource: string | null;
 }
 
 /** GET /v1/keys/report — key hygiene. */
@@ -729,12 +993,22 @@ export interface ApiKeyReport {
   expiringSoon: Array<ApiKeyPrefix & { reason: string }>;
   noExpiry: number;
   total: number;
+  /** Revoked, rolled and leak-revoked keys, newest first. */
+  revoked?: ApiKeyRevoked[];
 }
 
-/** A newly issued key. `key` is returned ONCE and never again. Returned by keys.issue(). */
+/** A newly issued key. `key` is returned ONCE and never again (or, with `secretRecipient`, sealed). */
 export interface ApiKeyIssued {
   key: string;
   prefix: string;
+  expiresAt?: number | null;
+  scopes?: string[] | null;
+  cbids?: string[] | null;
+  /** No expiry, or one over 365 days. */
+  warnings?: string[];
+  /** With `secretRecipient`: the key, sealed (and `key` absent). */
+  sealed_secret?: string;
+  sealed_field?: string;
 }
 
 /** @deprecated No endpoint returns this shape; use {@link ApiKeyPrefix} / {@link ApiKeyIssued}. */
@@ -749,14 +1023,14 @@ export interface ApiKey {
 }
 
 /**
- * Input for issuing a new API key.
- *
- * NOTE: the server's POST /v1/keys currently accepts no body and always mints an
- * unscoped key — `name` is not yet honoured server-side. It's kept here (rather than
- * dropped) so a future scoped/named-key endpoint can start reading it without an SDK
- * major version bump; see {@link CookieMunchClient.keys}.
+ * Input for issuing a new API key (POST /v1/keys). Every field is honoured: `scopes`, `cbids`,
+ * `expiresInDays` / `expiresAt`, `name`, `owner` and `strictUnknownFields`.
  */
 export interface ApiKeyIssueInput {
+  /** `user:<id>`, `service:<name>` or `apikey:<prefix>`. Default: the calling key. */
+  owner?: string;
+  /** Writes with the new key refuse unknown body fields unless they send `Prefer: lenient-unknown-fields`. */
+  strictUnknownFields?: boolean;
   name?: string;
   /** Least privilege: grant only these scopes. Omit for a full-access key. */
   scopes?: string[];
@@ -769,6 +1043,27 @@ export interface ApiKeyIssueInput {
   expiresInDays?: number;
   /** Or when it expires: epoch ms or an ISO date-time (not with expiresInDays). Omit both: never. */
   expiresAt?: number | string;
+}
+
+/** One entitlement (suite-standard shape). A feature is `{key, enabled}`; a limit is `limits.<name>`. */
+export interface Entitlement {
+  key: string;
+  enabled: boolean;
+  /** Limits only. null = unlimited, 0 = not on this plan. */
+  limit?: number | null;
+  /** Limits the server meters, when metering is wired. */
+  used?: number;
+  source: 'plan';
+}
+
+/** GET /v1/entitlements: what the org may use, from its effective plan. */
+export interface Entitlements {
+  orgId: string;
+  plan: string;
+  planSource: 'org' | 'account';
+  subscribedPlan: string;
+  entitlements: Entitlement[];
+  generatedAt: string;
 }
 
 /** Org usage/quota summary. Matches the server's Usage schema. */
@@ -788,6 +1083,62 @@ export interface WebhookSubscription {
   cbid: string | null;
   active: boolean;
   createdAt: number;
+  /** The endpoint lifecycle: `failing` from the first event that failed every retry, `disabled` after 72 hours. */
+  state?: 'healthy' | 'failing' | 'disabled' | 'paused';
+  failingSince?: number | null;
+  disabledAt?: number | null;
+  lastSuccessAt?: number | null;
+  lastFailure?: { at: number; status: number | null; error: string | null } | null;
+  lastDeliveryAt?: number | null;
+  lastStatus?: number | null;
+  consecutiveFailures?: number;
+  /** Who is emailed when it fails; null: the organisation's owners. */
+  alertContacts?: string[] | null;
+  /** On an update that re-enabled a disabled endpoint: how to send what it missed. */
+  replay?: { since: number; path: string };
+}
+
+/** POST /v1/webhooks/{id}/replay. */
+export interface WebhookReplayResult {
+  ok: boolean;
+  replayed: number;
+  failed: number;
+  remaining: number;
+  stoppedAt?: string;
+  status?: number;
+  error?: string;
+}
+
+/** The audit-log export (GET/PUT /v1/audit/sink). Never the secret. */
+export interface AuditSink {
+  type: 'webhook';
+  url: string;
+  secretSet: true;
+  createdAt: number;
+  updatedAt: number;
+  lastDeliveryAt: number | null;
+  lastStatus: number | null;
+  lastError: string | null;
+}
+export interface AuditSinkInput {
+  type: 'webhook';
+  url: string;
+  /** 16–256 characters; omitted: one is generated and returned once. */
+  secret?: string;
+}
+
+/** GET /v1/sites/{cbid}/consent/insights. */
+export interface ConsentInsights {
+  cbid: string;
+  from: number;
+  to: number;
+  totals: { impressions: number | null; decisions: number; optIns: number; optOuts: number; optInRate: number | null; decisionRate: number | null };
+  byRegion: Array<{ region: string; decisions: number; optIns: number; optInRate: number | null }>;
+  byVariant: Array<{ variant: string; impressions: number; optIns: number; optInRate: number | null }>;
+  byVariantWindow: 'all_time';
+  byLanguage: null;
+  timeToDecision: null;
+  notRecorded: { byLanguage: string; timeToDecision: string };
 }
 
 /** One cookie read from another CMP's export. */
@@ -1062,6 +1413,8 @@ export interface AuditEntry {
 
 /** Rename a key, or replace its scopes or the properties it is locked to. */
 export interface ApiKeyUpdate {
+  owner?: string;
+  strictUnknownFields?: boolean;
   name?: string;
   scopes?: string[];
   cbids?: string[];
@@ -1104,8 +1457,10 @@ export interface WebhookUpdate {
   events?: string[];
   /** One property, or null for every property in the org. */
   cbid?: string | null;
-  /** false pauses delivery without deleting the subscription. */
+  /** false pauses delivery without deleting the subscription; true re-enables a disabled one. */
   active?: boolean;
+  /** 1–10 addresses emailed when it fails; null: back to the organisation's owners. */
+  alertContacts?: string[] | null;
 }
 
 /** One site to create in a bulk call. */
@@ -1459,15 +1814,52 @@ export interface DsarExecutor {
   presetParams?: Record<string, string>;
   /** How the stored address and profile differ from what its preset version builds. Empty: unmodified. */
   presetDiff?: ConfigChange[];
+  /** Preset-built: profile fields you removed or changed by hand; `upgradeExecutorPreset` keeps them. */
+  profileOverrides?: Array<{ path: string; kind: 'removed' | 'changed'; at: number }>;
+  /** Preset-built: true when it must not follow its preset. */
+  presetPinned?: boolean;
+  /** Your name for the credential. */
+  label?: string;
+  /** 2: orchestrator v2 headers on every call; 1: the v1 adapter every connection made before v2 has. */
+  orchestrator?: 1 | 2;
+  hasCompletionSecret?: boolean;
+  completionSecretPrefix?: string;
+  /** When a signed completion last verified; running work is then polled every 6 hours. */
+  lastSignedCompletionAt?: number | null;
+  /** Where signed cm-standard-v2 completions go. */
+  completionsUrl?: string;
+  /** On create only: the completion secret, shown this once. */
+  completionSecret?: string;
 }
 
-/** A connection's last canary health check. */
+/** POST …/completion-secret/roll. */
+export interface CompletionSecretRolled {
+  id: string;
+  completionSecret: string;
+  completionSecretPrefix: string;
+  previousRetiresAt: string | null;
+  completionsUrl?: string;
+}
+
+/** POST …/test {conformance: true}: the conformance kit's report. */
+export interface ExecutorConformanceResult extends ConformanceReport {
+  conformance: true;
+  canary: true;
+  email: string;
+}
+
+/** A connection's last health check. */
 export interface ExecutorHealth {
   lastCheckedAt: number;
   ok: boolean;
   verdict: string;
   /** e.g. `base_url_redirects`, `credential_unavailable`. */
   code?: string;
+  /** When a check last passed. */
+  lastSuccessAt?: number;
+  /** On reads: true when the last check is more than an hour old, with the command that re-checks it in `hint`. */
+  stale?: boolean;
+  hint?: string;
 }
 
 /** A preset's name, as `executorPresets()` lists them. Not enumerated here: presets are data. */
@@ -1486,9 +1878,15 @@ export interface DsarExecutorPresetInput {
   baseUrl?: string;
   orgId?: string;
   atlasIdAppId?: string;
+  /** A preset param, when the preset lists it: default false. True adds an optional step revoking the person's app grant on erasure. */
+  revokeAtlasIdGrant?: boolean;
   webhookSecret?: string;
   auto?: boolean;
   cbid?: string;
+  /** Your name for the credential, shown beside `keyPrefix`. */
+  label?: string;
+  /** Default 2. */
+  orchestrator?: 1 | 2;
 }
 
 /** What `upgradeExecutorPreset` takes: a version, a preset to adopt, or params to add. */
@@ -1497,6 +1895,22 @@ export interface ExecutorPresetUpgrade {
   presetVersion?: number;
   orgId?: string;
   atlasIdAppId?: string;
+  revokeAtlasIdGrant?: boolean;
+  /** Overridden paths (`profileOverrides`) that take the preset's value again; every other override is kept. */
+  acceptPreset?: string | string[];
+}
+
+/** One step a preset builds, and whether it can run now (CMU-B01). */
+export interface ExecutorPresetStep {
+  name: 'subjectLookup' | 'open' | 'poll' | 'webhook' | 'grantRevoke';
+  available: boolean;
+  /** Never fails a connection: a credential without the scope reports `skipped: insufficient_scope`. */
+  optional?: boolean;
+  /** False: added only with `param`. */
+  defaultOn: boolean;
+  param?: string;
+  note?: string;
+  waitingOn?: { platform: string; items: string[]; operations: string[] };
 }
 
 /** The presets, which are usable now, and this org's canary address. */
@@ -1507,9 +1921,10 @@ export interface ExecutorPresets {
     title: string;
     latestVersion: number;
     defaultSystem?: string;
-    params: Array<{ name: string; required: boolean; description: string }>;
+    params: Array<{ name: string; required: boolean; description: string; type?: 'string' | 'boolean' }>;
     available: boolean;
     waitingOn?: { platform: string; items: string[]; operations: string[] };
+    steps: ExecutorPresetStep[];
   }>;
 }
 
@@ -1574,6 +1989,8 @@ export interface DsarExecutorInput {
   subjectNote?: string;
   /** How to drive it. */
   profile: ExecutorProfile;
+  /** Default 2. */
+  orchestrator?: 1 | 2;
 }
 
 export type DsarExecutorCreated = DsarExecutor;
@@ -1587,13 +2004,19 @@ export interface DsarExecutorPatch {
   auto?: boolean;
   /** null removes it. */
   subjectNote?: string | null;
+  /** Your name for the credential; null removes it. */
+  label?: string | null;
+  /** Preset-built only: true stops `upgradeExecutorPreset` changing it. */
+  presetPinned?: boolean;
+  /** Opt in to (2) or out of (1) orchestrator v2. */
+  orchestrator?: 1 | 2;
 }
 
 /** One entry in a fulfilment task's status history. */
 export interface DsarTaskEvent {
   at: number;
   kind: 'created' | 'changed' | 'version_changed';
-  status: 'pending' | 'running' | 'done' | 'failed';
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
   detail?: string;
   outcome?: DsarTaskOutcome;
   scheduledFor?: number;
@@ -1632,7 +2055,7 @@ export interface DsarTask {
   requestId: string;
   system: string;
   operation: FulfillmentOp;
-  status: 'pending' | 'running' | 'done' | 'failed';
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
   detail?: string;
   outcome?: DsarTaskOutcome;
   attempts: number;
@@ -1666,6 +2089,8 @@ export interface ExecutorTestResult {
   code?: string;
   /** The subject's app grant at an identity platform, when the profile has a grant step. Never revoked by a test. */
   grant?: string;
+  /** Optional steps this credential may not run: reported, never a failure. */
+  skipped?: Array<{ step: string; reason: 'insufficient_scope' }>;
   /** Present when the test used the org canary address, with the address in `email`. */
   canary?: boolean;
   email?: string;
@@ -1718,19 +2143,35 @@ export interface CookieMunchClient {
      * comes from, plus the per-account org cap and the upgrade URL. Needs an unscoped key that
      * is not locked to properties.
      */
-    list(): Promise<AccountOrgs>;
+    list(opts?: MetadataFilter): Promise<AccountOrgs>;
     /**
      * Create a sibling organisation owned by the same account — for a separate business of
      * your own. Needs an unscoped key. Not reseller provisioning, which is for your customers.
      */
     create(
       name: string,
-      opts?: { mintKey?: boolean; keyScopes?: string[] },
+      opts?: { mintKey?: boolean; keyScopes?: string[]; keyExpiresInDays?: number; keyOwner?: string } & ResourceTagsInput,
     ): Promise<{ org: { id: string; name: string; role: string }; apiKey?: string; keyError?: string }>;
+    /** Hard-delete a SANDBOX organisation of this account (created with metadata.forgedeck_sandbox). Anything else: 403 not_a_sandbox. */
+    deleteSandbox(id: string): Promise<SandboxPurge>;
   };
+  /** Tags on any created resource (CMU-X29). */
+  metadata: {
+    get(type: TaggedType, id: string): Promise<ResourceTags>;
+    /** Merge tags (null removes one). `forgedeck_sandbox` cannot be set here. `{ dryRun: true }` answers with the diff. */
+    update(type: TaggedType, id: string, metadata: Record<string, string | number | boolean | null>, opts?: { dryRun?: boolean }): Promise<ResourceTagsUpdate>;
+  };
+  /** Partner links in the suite-standard shape (CMU-X34). */
+  partnerLinks: {
+    list(opts?: MetadataFilter): Promise<StandardPartnerLink[]>;
+    create(input: StandardPartnerLinkCreate): Promise<StandardPartnerLink>;
+    revoke(id: string): Promise<StandardPartnerLink>;
+  };
+  /** What `forgedeck env` writes for a product provisioned with this forgedeck ref: names, values, secret references. */
+  provisionEnv(ref: string): Promise<ProvisionEnv>;
   sites: {
-    list(): Promise<Site[]>;
-    create(input: SiteCreate): Promise<Site>;
+    list(opts?: MetadataFilter): Promise<Site[]>;
+    create(input: SiteCreate & ResourceTagsInput): Promise<Site>;
     get(cbid: string): Promise<Site>;
     /**
      * Rename or move a site: domain, display name, aliases. The cbid and the consent ledger stay; a domain
@@ -1738,6 +2179,8 @@ export interface CookieMunchClient {
      */
     update(cbid: string, patch: SiteUpdate, opts?: { dryRun?: boolean }): Promise<SiteUpdateResult>;
     delete(cbid: string): Promise<void>;
+    /** Purge a SANDBOX site: its consent ledger, declarations and test rights requests too. Anything else: 403 not_a_sandbox. */
+    deleteSandbox(cbid: string): Promise<SandboxPurge>;
     /** Partner platforms granted this site's consent events, and the partners on offer. */
     listPartners(cbid: string): Promise<{ links: PartnerLink[]; partners: PartnerCatalogEntry[] }>;
     /** Grant a partner (Forumulate, Atlas) the site's consent events — no secret is created. Idempotent. */
@@ -1838,15 +2281,25 @@ export interface CookieMunchClient {
     unretireCookie(cbid: string, name: string): Promise<void>;
     /** What un-retiring would leave; nothing is removed. */
     unretireCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<{ dryRun: true; retired: RetiredCookie[] }>;
-    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch, referally): params, what it declared here, manifest status. */
-    cookiePresets(cbid: string): Promise<{ presets: CookiePreset[] }>;
+    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch, referalli, firstpromoter, partnerstack, tapfiliate, impact): params, what it declared here, manifest status. */
+    cookiePresets(cbid: string): Promise<{ presets: CookiePreset[]; aliases?: Record<string, string> }>;
     /**
      * Apply (or re-sync) a vendor preset: declares what that platform writes, marked
      * `vendor`. Names you declared yourself are kept (`skipped`). `dryRun` stores nothing.
      */
     applyCookiePreset(cbid: string, vendor: CookiePresetVendor, params?: CookiePresetParams, opts?: { dryRun?: boolean }): Promise<CookiePresetResult>;
+    /**
+     * Declare ANY vendor's cookies and storage from its embed manifest (`url`, re-read hourly, or
+     * the `manifest` itself). The vendor id is the manifest's `product`; remove it with
+     * removeCookiePreset(cbid, product). `dryRun` stores nothing.
+     */
+    importCookieManifest(cbid: string, input: CustomPresetInput, opts?: { dryRun?: boolean }): Promise<CookiePresetResult>;
+    /** What to declare: detected vendors (script, storage, manifest) and one suggestion per undeclared row. */
+    cookieSuggestions(cbid: string): Promise<CookieSuggestions>;
+    /** Declare the suggestions: detected vendors' presets, then every other suggestion with a purpose. Try `dryRun` first. */
+    declareCookieSuggestions(cbid: string, input?: { names?: string[]; presets?: boolean }, opts?: { dryRun?: boolean }): Promise<CookieSuggestionsDeclared>;
     /** Remove every declaration a vendor preset made. */
-    removeCookiePreset(cbid: string, vendor: CookiePresetVendor, opts?: { dryRun?: boolean }): Promise<{ vendor: CookiePresetVendor; removed: string[]; dryRun?: true; declared?: DeclaredCookie[]; diff?: DeclarationDiff }>;
+    removeCookiePreset(cbid: string, vendor: CookiePresetVendor | (string & {}), opts?: { dryRun?: boolean }): Promise<{ vendor: string; removed: string[]; dryRun?: true; declared?: DeclaredCookie[]; diff?: DeclarationDiff }>;
     /** Remove every stored (scanned or observed) row of this name. A declaration of it stays. */
     deleteObservedCookie(cbid: string, name: string): Promise<void>;
     /** What deleting it would remove; nothing is removed. */
@@ -1881,6 +2334,10 @@ export interface CookieMunchClient {
     /** Create up to 100 sites. Partial success: a bad or duplicate item fails only itself. */
     createBulk(sites: BulkSiteInput[]): Promise<{ results: BulkSiteResult[] }>;
     brand(cbid: string): Promise<BrandExtractionResult>;
+    /** Read back the brand.json last imported: each role, its source (brand.json or site), ignored[] and warnings[]. 404 when none. */
+    getBrand(cbid: string): Promise<BrandReadBack>;
+    /** Import a brand.json (`{url}` or the document) into the banner theme and the rights page. `dryRun` saves nothing. */
+    setBrand(cbid: string, input: BrandImportInput, opts?: { dryRun?: boolean }): Promise<BrandReadBack>;
     /** Read a site's v2 banner flow (views, categories) plus any lint issues. */
     getFlow(cbid: string): Promise<SiteFlow>;
     /** Apply an ordered batch of structured edit ops; validated + persisted if lint-clean. */
@@ -1896,6 +2353,8 @@ export interface CookieMunchClient {
      */
     verify(cbid: string): Promise<{ valid: boolean }>;
     stats(cbid: string, query?: RangeQuery): Promise<ConsentDay[]>;
+    /** Opt-in by region and A/B variant, and the decision rate. Language and time-to-decision are not recorded (null). */
+    insights(cbid: string, query?: RangeQuery): Promise<ConsentInsights>;
     log(cbid: string, query?: LogQuery): Promise<ConsentLogRow[]>;
     export(cbid: string, query?: RangeQuery): Promise<string>;
     receipt(cbid: string, stamp: string): Promise<SignedReceipt>;
@@ -1907,6 +2366,12 @@ export interface CookieMunchClient {
      *  prefix and no auth is required by the server (the cbid must be a registered site); for
      *  server-side / non-browser consent flows. Pass `subjectId` to correlate a subject cross-surface. */
     ingest(input: ConsentIngestInput): Promise<void>;
+    /**
+     * The reserved categories any site can switch on with `categories.suite` (`support_chat`,
+     * `referrals`): stance, fallback, regulatory basis, wording in every banner language, and
+     * known vendors. Public — `GET /v1/categories/registry` needs no key.
+     */
+    categoryRegistry(): Promise<CategoryRegistry>;
   };
   dsar: {
     list(): Promise<DsarRequest[]>;
@@ -1915,7 +2380,7 @@ export interface CookieMunchClient {
      * wrapped as `{ request }`, so `create(...).request.id` is what you pass here.
      */
     get(id: string): Promise<DsarRequest>;
-    create(input: DsarCreate): Promise<{ request: DsarRequest }>;
+    create(input: DsarCreate & ResourceTagsInput): Promise<{ request: DsarRequest }>;
     /** `opts.messageToSubject` replaces the line the subject reads in the notice — for a rejection, why. */
     advance(id: string, toStatus: DsarStatus, opts?: { messageToSubject?: string }): Promise<{ request: DsarRequest }>;
     /** The subject-facing response notice for a request, as plain text. */
@@ -1941,6 +2406,21 @@ export interface CookieMunchClient {
      * as `dsar.marked_test`; afterwards `delete` works on it. `changed` is false on a repeat.
      */
     markTest(id: string): Promise<{ request: DsarRequest; changed: boolean }>;
+    /** Requests carrying one X-ForgeDeck-Trace (`GET /v1/dsar?trace=`). */
+    listByTrace(trace: string): Promise<DsarRequest[]>;
+    /**
+     * Open a case fanned out to every connected system (POST /v1/dsar/requests). `opts.idempotencyKey`
+     * (16–128 chars) makes a retry answer the same case; `opts.trace` passes your X-ForgeDeck-Trace on.
+     */
+    openCase(input: DsarCaseCreate, opts?: { idempotencyKey?: string; trace?: string }): Promise<DsarCase>;
+    /** One case across every system. */
+    getCase(id: string): Promise<DsarCase>;
+    /** Cancel a case before executeAfter; status `cancelled` once every system confirmed. */
+    cancelCase(id: string): Promise<DsarCase>;
+    /** The signed receipt for a case. */
+    caseReceipt(id: string): Promise<DsarCaseReceipt>;
+    /** The signed receipt as a PDF. */
+    caseReceiptPdf(id: string): Promise<ArrayBuffer>;
   };
   vendors: {
     list(): Promise<ScoredVendor[]>;
@@ -2095,12 +2575,14 @@ export interface CookieMunchClient {
      * platform holding your users' accounts, for instance. The in-VPC agent covers the
      * systems we cannot reach; these are the ones we can.
      */
-    executors(): Promise<DsarExecutor[]>;
+    executors(opts?: MetadataFilter): Promise<DsarExecutor[]>;
+    /** One connection with its full profile, never the credentials. Read it before changing `profile`: `updateExecutor` replaces the whole profile. */
+    executor(id: string): Promise<DsarExecutor>;
     /**
      * Connect one. The secret is stored encrypted and never returned; the response carries
      * the URL to point that system's webhook at.
      */
-    connectExecutor(input: DsarExecutorInput | DsarExecutorPresetInput): Promise<DsarExecutorCreated>;
+    connectExecutor(input: (DsarExecutorInput | DsarExecutorPresetInput) & ResourceTagsInput): Promise<DsarExecutorCreated>;
     /**
      * Change a connection in place. Only what you send changes, and the stored credential
      * is kept unless you pass a new `secretKey` — so adding a field to a profile does not
@@ -2141,6 +2623,14 @@ export interface CookieMunchClient {
      * the raw (redacted) upstream answers and what a real request would have sent.
      */
     testExecutor(id: string, input: ExecutorTestInput): Promise<ExecutorTestResult>;
+    /** Re-check a connection now (a canary test that records its health); for a deploy pipeline. */
+    recheckExecutor(id: string): Promise<ExecutorTestResult>;
+    /** A connection's last health checks, newest first (`limit` 1 to 50, default 50). */
+    executorHealthHistory(id: string, opts?: { limit?: number }): Promise<ExecutorHealth[]>;
+    /** Run the cm-standard-v2 conformance kit against a connection, on the canary subject only. */
+    executorConformance(id: string): Promise<ExecutorConformanceResult>;
+    /** A new completion secret, shown once; the old one keeps verifying for 24 hours. */
+    rollExecutorCompletionSecret(id: string): Promise<CompletionSecretRolled>;
   };
   preferences: {
     list(): Promise<PreferenceItem[]>;
@@ -2180,15 +2670,38 @@ export interface CookieMunchClient {
     update(prefix: string, patch: ApiKeyUpdate): Promise<{ ok: true }>;
     /** Key hygiene: keys unused for `unusedDays` (default 90), broad keys, keys expiring within `expiringDays` (default 14). */
     report(opts?: { unusedDays?: number; expiringDays?: number }): Promise<ApiKeyReport>;
+    /** The suite-standard listing (`?shape=standard`). */
+    listStandard(): Promise<StandardKeyList>;
+    /** The calling key itself, whatever its scopes: check its own expiry. */
+    self(): Promise<ApiKeyPrefix>;
+    /** The calling key rotates itself; the old secret stops at once. Use a client with an Idempotency-Key header. */
+    rollSelf(): Promise<ApiKeyIssued>;
+    /** A short-lived key (ttlSeconds at most 43200) within this key's own scopes and properties. Needs keys:write or full access. */
+    vend(input: { scopes: string[]; ttlSeconds: number; cbids?: string[]; name?: string }): Promise<ApiKeyVended>;
+    /** Revoke a leaked secret (works without a valid key; always answers { received }). */
+    revokeLeaked(report: LeakReport): Promise<{ received: number }>;
   };
   usage(): Promise<Usage>;
+  /** What the org may use: every plan feature (`whiteLabel`, `tcf`, …) and limit, in the suite-standard shape. Any key may read it. */
+  entitlements(): Promise<Entitlements>;
   /** Every link a site's privacy wiring depends on, one row each with `ok` and a fix hint. `cbid` may be omitted with one site. */
   integrationHealth(cbid?: string): Promise<IntegrationHealthReport>;
+  /** Waive a health check you chose not to meet: the row reports `ok: null` with `waived`. Audited. */
+  healthWaivers: {
+    list(cbid?: string): Promise<{ cbid: string; waivers: HealthWaiver[] }>;
+    set(input: HealthWaiverInput): Promise<{ waiver: HealthWaiver }>;
+    remove(check: string, opts?: { cbid?: string; subject?: string }): Promise<void>;
+  };
+  /**
+   * The site's embed manifest: the tenant variant of `/.well-known/forgedeck-embed.json` — every
+   * origin by CSP directive and every browser key the embed writes for this site's config. Public.
+   */
+  embedManifest(cbid: string): Promise<EmbedManifest>;
   /**
    * Wire a product's privacy in one call: the site, connected systems, Atlas and Forumulate. Idempotent;
    * `{ dryRun: true }` writes nothing anywhere. No secret appears in the answer.
    */
-  provision(input: ProvisionRequest, opts?: { dryRun?: boolean }): Promise<ProvisionResult>;
+  provision(input: ProvisionRequest | ProvisionRequestV2, opts?: { dryRun?: boolean; fromStep?: string }): Promise<ProvisionResult>;
   /** The key's organisation. Requires an unscoped key that is not property-locked. */
   org: {
     get(): Promise<Org>;
@@ -2236,7 +2749,14 @@ export interface CookieMunchClient {
     };
   };
   /** The org's audit log, newest first. API actions appear as `apikey:<prefix>`. */
-  audit(limit?: number): Promise<{ entries: AuditEntry[] }>;
+  /** `{ actor: 'self' }` reads the calling key's own rows, the one form a scoped key may call. */
+  audit(limit?: number, opts?: { actor?: string }): Promise<{ entries: AuditEntry[] }>;
+  /** Stream the audit log to an HTTPS endpoint as CloudEvents 1.0. Unscoped keys. */
+  auditSink: {
+    get(): Promise<{ sink: AuditSink }>;
+    set(input: AuditSinkInput): Promise<{ sink: AuditSink; secret?: string }>;
+    remove(): Promise<void>;
+  };
   assets: {
     /** Upload a banner image (≤ 1,000,000 bytes) and get its public URL. Requires sites:write. */
     upload(input: AssetUpload): Promise<{ url: string }>;
@@ -2264,8 +2784,8 @@ export interface CookieMunchClient {
     revokeKey(id: string, prefix: string): Promise<void>;
   };
   webhooks: {
-    list(): Promise<WebhookSubscription[]>;
-    create(input: WebhookCreate): Promise<WebhookSubscription>;
+    list(opts?: MetadataFilter): Promise<WebhookSubscription[]>;
+    create(input: WebhookCreate & ResourceTagsInput): Promise<WebhookSubscription>;
     /** Change or pause a subscription. `{ active: false }` pauses without deleting it. */
     update(id: string, patch: WebhookUpdate): Promise<WebhookSubscription>;
     delete(id: string): Promise<void>;
@@ -2277,6 +2797,8 @@ export interface CookieMunchClient {
     deadLetters(): Promise<{ deadLetters: WebhookDeadLetter[] }>;
     /** Deliver a dead letter again, to the subscription as it is now. */
     replayDeadLetter(id: string): Promise<unknown>;
+    /** Send what a failing or disabled endpoint missed since `since` (epoch ms or ISO), oldest first, stopping at the first failure. */
+    replay(id: string, since: number | string, opts?: { limit?: number }): Promise<WebhookReplayResult>;
   };
   /**
    * Account-linked rights requests: a single-use link to the hosted rights page for a person your
@@ -2318,6 +2840,16 @@ export interface CookieMunchClient {
     /** Remove the site's own setting: it inherits the organisation default again. */
     remove(cbid: string): Promise<RightsIdentity>;
   };
+  /** A site's rights-request settings: graceDays (0–30; 7 for a new site, 0 until set for one that existed before). Requires dsar:read / dsar:write. */
+  dsarSettings: {
+    get(cbid: string): Promise<DsarSettings>;
+    set(cbid: string, input: { graceDays: number }): Promise<DsarSettings>;
+  };
+  /** Cards for support, CRM and helpdesk sidebars. Requires dsar:read. */
+  integrations: {
+    /** Open rights requests for one person, by identity (preferred) or email. */
+    subjectCard(app: string, person: { iss: string; sub: string } | { email: string }): Promise<SubjectCard>;
+  };
   /** One person's consent across every site in the org, by the subjectId your apps attach. */
   subjects: {
     /** Requires consent:read; not available to property-locked keys. */
@@ -2333,6 +2865,12 @@ export interface CookieMunchClient {
     setAssignments(id: string, cbids: string[]): Promise<{ cbids: string[] }>;
     publish(id: string): Promise<{ publishedCbids: string[] }>;
   };
+}
+
+/** `?metadata[k]=v&…` from a MetadataFilter. */
+function metaQs(o: MetadataFilter | undefined): string {
+  const parts = Object.entries(o?.metadata ?? {}).map(([k, v]) => `metadata%5B${encodeURIComponent(k)}%5D=${encodeURIComponent(v)}`);
+  return parts.length ? `?${parts.join('&')}` : '';
 }
 
 function qs(query: Record<string, number | string | undefined> | undefined): string {
@@ -2354,9 +2892,11 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
   const doFetch = opts.fetch ?? globalThis.fetch;
   if (!doFetch) throw new Error('No fetch available; pass { fetch } in CookieMunchOptions.');
 
-  async function request(method: string, path: string, body?: unknown, raw = false): Promise<unknown> {
-    const headers: Record<string, string> = { Authorization: `Bearer ${opts.apiKey}`, 'User-Agent': opts.userAgent ?? `cookiemunch-js/${SDK_VERSION}` };
+  async function request(method: string, path: string, body?: unknown, raw = false, extraHeaders: Record<string, string> = {}): Promise<unknown> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${opts.apiKey}`, 'User-Agent': opts.userAgent ?? `cookiemunch-js/${SDK_VERSION}`, ...extraHeaders };
     if (opts.strictUnknownFields && method !== 'GET') headers['Prefer'] = 'strict-unknown-fields';
+    if (opts.secretRecipient && method !== 'GET') headers['X-Secret-Recipient'] = opts.secretRecipient;
+    for (const [k, v] of Object.entries(opts.headers ?? {})) headers[k] = v;
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -2384,28 +2924,57 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
   }
 
   const get = (p: string) => request('GET', p);
+  /** A binary answer (a PDF), as bytes. */
+  async function requestBytes(path: string): Promise<ArrayBuffer> {
+    const res = await doFetch(`${base}${path}`, { method: 'GET', headers: { Authorization: `Bearer ${opts.apiKey}`, 'User-Agent': opts.userAgent ?? `cookiemunch-js/${SDK_VERSION}` } });
+    if (!res.ok) {
+      let message = `request failed with status ${res.status}`;
+      let code: string | undefined;
+      try {
+        const data = (await res.json()) as { error?: string; code?: string };
+        if (typeof data.error === 'string') message = data.error;
+        if (typeof data.code === 'string') code = data.code;
+      } catch {
+        /* keep the default message */
+      }
+      throw new CookieMunchApiError(res.status, message, code);
+    }
+    return res.arrayBuffer();
+  }
   const enc = encodeURIComponent;
 
   return {
     me: () => get('/me') as Promise<Identity>,
     languages: () => get('/languages') as Promise<SupportedLanguage[]>,
     orgs: {
-      list: () => get('/orgs') as Promise<AccountOrgs>,
+      list: (o) => get(`/orgs${metaQs(o)}`) as Promise<AccountOrgs>,
       create: (name, opts) =>
         request('POST', '/orgs', { name, ...(opts ?? {}) }) as Promise<{
           org: { id: string; name: string; role: string };
           apiKey?: string;
           keyError?: string;
         }>,
+      deleteSandbox: (id) => request('DELETE', `/orgs/${enc(id)}?hard=1`) as Promise<SandboxPurge>,
     },
+    metadata: {
+      get: (type, id) => get(`/metadata/${enc(type)}/${enc(id)}`) as Promise<ResourceTags>,
+      update: (type, id, metadata, o) => request('PATCH', `/metadata/${enc(type)}/${enc(id)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, { metadata }) as Promise<ResourceTagsUpdate>,
+    },
+    partnerLinks: {
+      list: (o) => get(`/partner_links${metaQs(o)}`) as Promise<StandardPartnerLink[]>,
+      create: (input) => request('POST', '/partner_links', input) as Promise<StandardPartnerLink>,
+      revoke: (id) => request('DELETE', `/partner_links/${enc(id)}`) as Promise<StandardPartnerLink>,
+    },
+    provisionEnv: (ref) => get(`/provision/env${qs({ ref })}`) as Promise<ProvisionEnv>,
     sites: {
-      list: () => get('/sites') as Promise<Site[]>,
+      list: (o) => get(`/sites${metaQs(o)}`) as Promise<Site[]>,
       create: (input) => request('POST', '/sites', input) as Promise<Site>,
       get: (cbid) => get(`/sites/${enc(cbid)}`) as Promise<Site>,
       update: (cbid, patch, o) => request('PATCH', `/sites/${enc(cbid)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, patch) as Promise<SiteUpdateResult>,
       delete: async (cbid) => {
         await request('DELETE', `/sites/${enc(cbid)}`);
       },
+      deleteSandbox: (cbid) => request('DELETE', `/sites/${enc(cbid)}?hard=1`) as Promise<SandboxPurge>,
       listPartners: (cbid) => get(`/sites/${enc(cbid)}/partners`) as Promise<{ links: PartnerLink[]; partners: PartnerCatalogEntry[] }>,
       linkPartner: (cbid, input, o) =>
         request('POST', `/sites/${enc(cbid)}/partners${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<{ change: 'created' | 'updated' | 'unchanged'; link: PartnerLink; dryRun?: true }>,
@@ -2470,9 +3039,14 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         const out = await request('DELETE', `/sites/${enc(cbid)}/cookies/${enc(name)}/retire${qs({ dryRun: o?.dryRun ? '1' : undefined })}`);
         return o?.dryRun ? out : undefined;
       }) as CookieMunchClient['sites']['unretireCookie'],
-      cookiePresets: (cbid) => get(`/sites/${enc(cbid)}/cookies/presets`) as Promise<{ presets: CookiePreset[] }>,
+      cookiePresets: (cbid) => get(`/sites/${enc(cbid)}/cookies/presets`) as Promise<{ presets: CookiePreset[]; aliases?: Record<string, string> }>,
       applyCookiePreset: (cbid, vendor, params, o) =>
         request('PUT', `/sites/${enc(cbid)}/cookies/presets/${enc(vendor)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, params ?? {}) as Promise<CookiePresetResult>,
+      importCookieManifest: (cbid, input, o) =>
+        request('PUT', `/sites/${enc(cbid)}/cookies/presets/custom${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<CookiePresetResult>,
+      cookieSuggestions: (cbid) => get(`/sites/${enc(cbid)}/cookies/suggestions`) as Promise<CookieSuggestions>,
+      declareCookieSuggestions: (cbid, input, o) =>
+        request('POST', `/sites/${enc(cbid)}/cookies/suggestions/declare${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input ?? {}) as Promise<CookieSuggestionsDeclared>,
       removeCookiePreset: (cbid, vendor, o) =>
         request('DELETE', `/sites/${enc(cbid)}/cookies/presets/${enc(vendor)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`) as Promise<{
           vendor: CookiePresetVendor;
@@ -2507,6 +3081,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       verifyChallenge: (cbid) => get(`/sites/${enc(cbid)}/verify/challenge`),
       createBulk: (sites) => request('POST', '/sites/bulk', { sites }) as Promise<{ results: BulkSiteResult[] }>,
       brand: (cbid) => request('POST', `/sites/${enc(cbid)}/brand`, {}) as Promise<BrandExtractionResult>,
+      getBrand: (cbid) => get(`/sites/${enc(cbid)}/brand`) as Promise<BrandReadBack>,
+      setBrand: (cbid, input, o) => request('PUT', `/sites/${enc(cbid)}/brand${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<BrandReadBack>,
       getFlow: (cbid) => get(`/sites/${enc(cbid)}/flow`) as Promise<SiteFlow>,
       editFlow: (cbid, operations) =>
         request('POST', `/sites/${enc(cbid)}/flow/ops`, { operations }) as Promise<FlowOpResponse>,
@@ -2515,6 +3091,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     consent: {
       verify: (cbid) => get(`/sites/${enc(cbid)}/consent/verify`) as Promise<{ valid: boolean }>,
       stats: (cbid, query) => get(`/sites/${enc(cbid)}/consent/stats${qs(toQuery(query))}`) as Promise<ConsentDay[]>,
+      insights: (cbid, query) => get(`/sites/${enc(cbid)}/consent/insights${qs(toQuery(query))}`) as Promise<ConsentInsights>,
       log: (cbid, query) => get(`/sites/${enc(cbid)}/consent/log${qs(toQuery(query))}`) as Promise<ConsentLogRow[]>,
       export: (cbid, query) => request('GET', `/sites/${enc(cbid)}/consent/export${qs(toQuery(query))}`, undefined, true) as Promise<string>,
       receipt: (cbid, stamp) => get(`/sites/${enc(cbid)}/receipt/${enc(stamp)}`) as Promise<SignedReceipt>,
@@ -2522,6 +3099,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         request('POST', `/sites/${enc(cbid)}/erase-consent`, { stamp }) as Promise<{ erased: number }>,
       exportSubject: (cbid, stamp) =>
         request('GET', `/sites/${enc(cbid)}/subject-export?stamp=${enc(stamp)}`) as Promise<{ cbid: string; stamp: string; records: unknown[]; count: number }>,
+      categoryRegistry: () => get('/categories/registry') as Promise<CategoryRegistry>,
       ingest: async (input) => {
         // The public ingest endpoint lives under /api/v1, not the /v1 dev-API prefix,
         // so it is called directly rather than via `request` (which prepends /v1).
@@ -2557,6 +3135,16 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         await request('DELETE', `/dsar/${enc(id)}`);
       },
       markTest: (id) => request('POST', `/dsar/${enc(id)}/mark-test`) as Promise<{ request: DsarRequest; changed: boolean }>,
+      listByTrace: (trace) => get(`/dsar${qs({ trace })}`) as Promise<DsarRequest[]>,
+      openCase: (input, o) =>
+        request('POST', '/dsar/requests', input, false, {
+          ...(o?.idempotencyKey ? { 'Idempotency-Key': o.idempotencyKey } : {}),
+          ...(o?.trace ? { 'X-ForgeDeck-Trace': o.trace } : {}),
+        }) as Promise<DsarCase>,
+      getCase: (id) => get(`/dsar/requests/${enc(id)}`) as Promise<DsarCase>,
+      cancelCase: (id) => request('POST', `/dsar/requests/${enc(id)}/cancel`) as Promise<DsarCase>,
+      caseReceipt: (id) => get(`/dsar/requests/${enc(id)}/receipt`) as Promise<DsarCaseReceipt>,
+      caseReceiptPdf: (id) => requestBytes(`/dsar/requests/${enc(id)}/receipt?format=pdf`),
     },
     vendors: {
       list: () => get('/vendors') as Promise<ScoredVendor[]>,
@@ -2665,7 +3253,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       status: (requestId) => get(`/dsar/${enc(requestId)}/fulfillment`),
       pendingTasks: (limit) => get(`/dsar/agent/tasks${qs({ limit })}`) as Promise<{ tasks: unknown[] }>,
       reportTask: (taskId, ok, error) => request('POST', `/dsar/agent/tasks/${enc(taskId)}/result`, { ok, ...(error !== undefined ? { error } : {}) }),
-      executors: () => get('/dsar/executors') as Promise<DsarExecutor[]>,
+      executors: (o) => get(`/dsar/executors${metaQs(o)}`) as Promise<DsarExecutor[]>,
+      executor: (id) => get(`/dsar/executors/${enc(id)}`) as Promise<DsarExecutor>,
       connectExecutor: (input) => request('POST', '/dsar/executors', input) as Promise<DsarExecutorCreated>,
       updateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}`, patch) as Promise<DsarExecutor>,
       dryRunConnectExecutor: (input) => request('POST', '/dsar/executors?dryRun=1', input) as Promise<DsarExecutorDryRun>,
@@ -2684,6 +3273,11 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       taskExport: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}/export`) as Promise<DsarTaskExport>,
       task: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}`) as Promise<DsarTask>,
       testExecutor: (id, input) => request('POST', `/dsar/executors/${enc(id)}/test`, input) as Promise<ExecutorTestResult>,
+      recheckExecutor: (id) => request('POST', `/dsar/executors/${enc(id)}/recheck`) as Promise<ExecutorTestResult>,
+      executorHealthHistory: (id, opts = {}) =>
+        get(`/dsar/executors/${enc(id)}/health/history${qs({ limit: opts.limit })}`) as Promise<ExecutorHealth[]>,
+      executorConformance: (id) => request('POST', `/dsar/executors/${enc(id)}/test`, { conformance: true }) as Promise<ExecutorConformanceResult>,
+      rollExecutorCompletionSecret: (id) => request('POST', `/dsar/executors/${enc(id)}/completion-secret/roll`) as Promise<CompletionSecretRolled>,
     },
     preferences: {
       list: () => get('/preferences') as Promise<PreferenceItem[]>,
@@ -2710,10 +3304,24 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       roll: (prefix) => request('POST', `/keys/${enc(prefix)}/roll`) as Promise<ApiKeyIssued>,
       update: (prefix, patch) => request('PATCH', `/keys/${enc(prefix)}`, patch) as Promise<{ ok: true }>,
       report: (o) => get(`/keys/report${qs({ unusedDays: o?.unusedDays, expiringDays: o?.expiringDays })}`) as Promise<ApiKeyReport>,
+      listStandard: () => get('/keys?shape=standard') as Promise<StandardKeyList>,
+      self: () => get('/keys/self') as Promise<ApiKeyPrefix>,
+      rollSelf: () => request('POST', '/keys/self/roll') as Promise<ApiKeyIssued>,
+      vend: (input) => request('POST', '/keys/vend', input) as Promise<ApiKeyVended>,
+      revokeLeaked: (report) => request('POST', '/keys/revoke_leaked', report) as Promise<{ received: number }>,
     },
     usage: () => get('/usage') as Promise<Usage>,
+    entitlements: () => get('/entitlements') as Promise<Entitlements>,
     integrationHealth: (cbid) => get(`/integration-health${qs({ cbid })}`) as Promise<IntegrationHealthReport>,
-    provision: (input, o) => request('POST', `/provision${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<ProvisionResult>,
+    healthWaivers: {
+      list: (cbid) => get(`/integration-health/waivers${qs({ cbid })}`) as Promise<{ cbid: string; waivers: HealthWaiver[] }>,
+      set: (input) => request('PUT', '/integration-health/waivers', input) as Promise<{ waiver: HealthWaiver }>,
+      remove: async (check, opts) => {
+        await request('DELETE', `/integration-health/waivers${qs({ check, cbid: opts?.cbid, subject: opts?.subject })}`);
+      },
+    },
+    embedManifest: (cbid) => get(`/embed${qs({ cbid })}`) as Promise<EmbedManifest>,
+    provision: (input, o) => request('POST', `/provision${qs({ dryRun: o?.dryRun ? '1' : undefined, fromStep: o?.fromStep })}`, input) as Promise<ProvisionResult>,
     org: {
       get: () => get('/org') as Promise<Org>,
       update: (patch) => request('PATCH', '/org', patch) as Promise<Org>,
@@ -2743,7 +3351,14 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         remove: () => request('DELETE', '/org/rights-identity') as Promise<RightsIdentity>,
       },
     },
-    audit: (limit) => get(`/audit${qs({ limit })}`) as Promise<{ entries: AuditEntry[] }>,
+    audit: (limit, opts) => get(`/audit${qs({ limit, actor: opts?.actor })}`) as Promise<{ entries: AuditEntry[] }>,
+    auditSink: {
+      get: () => get('/audit/sink') as Promise<{ sink: AuditSink }>,
+      set: (input) => request('PUT', '/audit/sink', input) as Promise<{ sink: AuditSink; secret?: string }>,
+      remove: async () => {
+        await request('DELETE', '/audit/sink');
+      },
+    },
     assets: {
       upload: (input) => request('POST', '/assets', input) as Promise<{ url: string }>,
       delete: async (urlOrFileName) => {
@@ -2766,7 +3381,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       },
     },
     webhooks: {
-      list: () => get('/webhooks') as Promise<WebhookSubscription[]>,
+      list: (o) => get(`/webhooks${metaQs(o)}`) as Promise<WebhookSubscription[]>,
       create: (input) => request('POST', '/webhooks', input) as Promise<WebhookSubscription>,
       update: (id, patch) => request('PATCH', `/webhooks/${enc(id)}`, patch) as Promise<WebhookSubscription>,
       delete: async (id) => {
@@ -2776,6 +3391,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       test: (id) => request('POST', `/webhooks/${enc(id)}/test`) as Promise<WebhookTestResult>,
       deadLetters: () => get('/webhooks/dead-letters') as Promise<{ deadLetters: WebhookDeadLetter[] }>,
       replayDeadLetter: (id) => request('POST', `/webhooks/dead-letters/${enc(id)}/replay`),
+      replay: (id, since, opts) => request('POST', `/webhooks/${enc(id)}/replay${qs({ since: String(since), limit: opts?.limit })}`) as Promise<WebhookReplayResult>,
     },
     rightsLinks: {
       create: (cbid, input) => request('POST', `/sites/${enc(cbid)}/rights-links`, input) as Promise<RightsLink>,
@@ -2794,6 +3410,13 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       get: (cbid) => get(`/sites/${enc(cbid)}/rights-identity`) as Promise<RightsIdentity>,
       set: (cbid, input) => request('PUT', `/sites/${enc(cbid)}/rights-identity`, input) as Promise<RightsIdentity>,
       remove: (cbid) => request('DELETE', `/sites/${enc(cbid)}/rights-identity`) as Promise<RightsIdentity>,
+    },
+    dsarSettings: {
+      get: (cbid) => get(`/sites/${enc(cbid)}/dsar-settings`) as Promise<DsarSettings>,
+      set: (cbid, input) => request('PUT', `/sites/${enc(cbid)}/dsar-settings`, input) as Promise<DsarSettings>,
+    },
+    integrations: {
+      subjectCard: (app, person) => get(`/integrations/${enc(app)}/card${qs(person as Record<string, string>)}`) as Promise<SubjectCard>,
     },
     subjects: {
       consent: (subjectId) =>

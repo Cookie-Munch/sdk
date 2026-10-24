@@ -88,20 +88,62 @@ export interface SiteUpdateResult {
 
 /** One row of GET /v1/integration-health. `ok: null` = the check could not run (see `detail`). */
 export interface HealthRow {
+  /** The suite shape's name for `check` (always equal). */
+  id: string;
   check: string;
+  /** The generic check this row is an instance of (`forumulate.webhook` → `webhook.delivery`); otherwise `check`. */
+  kind: string;
+  /** The vendor a vendor-specific instance is about. */
+  vendor?: string;
   ok: boolean | null;
   severity: 'error' | 'warning' | 'info';
   subject: string;
   fixHint?: string;
+  /** The same as fixHint (suite shape). */
+  fix?: string;
+  /** Where the check and its fix are explained. */
+  docs: string;
   detail?: string;
+  /** Network checks: the hop that failed (or, on success, the last one reached). */
+  hop?: 'dns' | 'tls' | 'http' | 'challenge' | 'auth';
+  status?: number;
+  elapsedMs?: number;
+  /** Failed network checks: a stable code (ENOTFOUND, timeout, challenge, http_503, …). */
+  error?: string;
+  /** A waiver covers this failing row; `ok` is then null. */
+  waived?: { reason: string; by: string; until: number | null };
   lastCheckedAt: number;
 }
 export interface IntegrationHealthReport {
   cbid: string;
   checkedAt: number;
+  generatedAt: string;
   ok: boolean;
-  counts: { error: number; warning: number; notChecked: number };
+  counts: { error: number; warning: number; notChecked: number; waived: number };
   checks: HealthRow[];
+}
+/** PUT /v1/integration-health/waivers. */
+export interface HealthWaiverInput {
+  /** Optional when the organisation has one site. */
+  cbid?: string;
+  /** A row's `check` or `kind`. */
+  check: string;
+  /** A row's `subject`; omitted: every subject of the check (`*`). */
+  subject?: string;
+  /** Why this is deliberate (1–500 characters). */
+  reason: string;
+  /** ISO date or epoch ms, future, within a year; omitted or null: never expires. */
+  until?: string | number | null;
+}
+export interface HealthWaiver {
+  cbid: string;
+  check: string;
+  subject: string;
+  reason: string;
+  by: string;
+  until: number | null;
+  createdAt: number;
+  expired?: boolean;
 }
 
 /** POST /v1/provision. Secrets are used for the request only and never returned. */
@@ -112,16 +154,20 @@ export interface ProvisionRequest {
   aliases?: string[];
   cbid?: string;
   /** `frontendApiHost` (e.g. auth.example.com) lets provision declare Atlas's sign-in cookies on the site. */
-  atlas?: { secretKey: string; cookieConsent?: boolean; dsrWebhook?: boolean; frontendApiHost?: string };
+  /** `rightsIdentity` (default true) makes Atlas the site's rights sign-in (step `rights.identity`). */
+  atlas?: { secretKey: string; cookieConsent?: boolean; dsrWebhook?: boolean; rightsIdentity?: boolean; frontendApiHost?: string };
   forumulate?: { token: string; orgId: string; consent?: boolean; executorKey?: boolean; label?: string };
   rightsApi?: { baseUrl: string; secretKey: string; profilePreset?: string };
 }
 export interface ProvisionStep {
+  /** v2 answers: the stable step id (`fromStep` takes it). */
+  id?: string;
   step: string;
-  status: 'created' | 'updated' | 'unchanged' | 'would_create' | 'would_update' | 'skipped' | 'waiting' | 'failed' | 'passed';
+  status: 'created' | 'updated' | 'unchanged' | 'would_create' | 'would_update' | 'skipped' | 'waiting' | 'waiting_on' | 'failed' | 'passed';
   detail?: string;
   diff?: Array<{ field: string; before: unknown; after: unknown }>;
-  waitingOn?: string;
+  /** A string in v1 answers; `{ platform, items }` in v2 answers. */
+  waitingOn?: string | { platform: string; items: string[] };
 }
 export interface ProvisionResult {
   dryRun: boolean;
@@ -129,9 +175,15 @@ export interface ProvisionResult {
   cbid: string | null;
   steps: ProvisionStep[];
   summary: { changed: number; unchanged: number; waiting: number; failed: number };
+  /** v2 answers only. */
+  version?: 2;
+  ids?: { orgId: string; cbid: string | null; executors: Record<string, string>; webhooks: string[] };
+  sealedSecrets?: Array<Record<string, unknown>>;
+  checklist?: string[];
 }
 
-export type PartnerId = 'forumulate' | 'atlas';
+/** A partner the deployment knows: built in (forumulate, atlas, chatly, referalli) or any other registered on it. */
+export type PartnerId = 'forumulate' | 'atlas' | 'chatly' | 'referalli' | (string & {});
 export interface PartnerLinkCreate {
   partner: PartnerId;
   /** The partner's id for the receiving account (a Forumulate organisation id, an Atlas instance id). */
@@ -200,9 +252,11 @@ export interface LogQuery extends RangeQuery {
   limit?: number;
 }
 
-export type DsarType = 'access' | 'deletion' | 'rectification' | 'portability' | 'opt-out';
+export type DsarType = 'access' | 'deletion' | 'rectification' | 'portability' | 'opt-out' | 'closure' | 'restriction';
+/** A type word as sent: the canonical words, or an alias (`erasure`/`erase` → deletion, `export` → access). */
+export type DsarTypeWord = DsarType | 'erasure' | 'erase' | 'export';
 export type Regulation = 'gdpr' | 'ccpa';
-export type DsarStatus = 'received' | 'verifying' | 'in_progress' | 'completed' | 'rejected';
+export type DsarStatus = 'received' | 'verifying' | 'in_progress' | 'completed' | 'rejected' | 'cancelled';
 
 export interface DsarRequest {
   id: string;
@@ -220,6 +274,130 @@ export interface DsarRequest {
   messageToSubject?: string;
   /** A test request: off the SLA board, labelled, and deletable with `dsar.delete`. A closed request can be marked one with `dsar.markTest`. */
   test?: boolean;
+  /** Its type in the suite vocabulary (`erasure` was stored as `deletion`). */
+  canonicalType?: string;
+  /** The case's X-ForgeDeck-Trace, when it has one. */
+  trace?: string;
+}
+
+/** A signed-in identity from any OIDC issuer the site trusts. `(iss, sub)` is the key. */
+export interface SubjectIdentity {
+  iss: string;
+  sub: string;
+  ext?: string;
+  principal?: string;
+}
+
+/** Who a case is about. `atlas` is accepted as an alias of `identity`. */
+export interface DsarSubject {
+  emails: string[];
+  identity?: SubjectIdentity;
+  atlas?: SubjectIdentity;
+}
+
+/** POST /v1/dsar/requests. */
+export interface DsarCaseCreate {
+  cbid: string;
+  type: DsarTypeWord;
+  subject?: DsarSubject;
+  /** The person's own token from the site's sign-in issuer (aud `cookiemunch:<cbid>`). */
+  subjectToken?: string;
+  /** product and atlas need dsar:write and attest the person; admin (default) files it received. */
+  source?: 'product' | 'atlas' | 'admin';
+  reason?: string;
+  /** Connections not to ask: system names, connection ids, or `self`. */
+  skipSystems?: string[];
+  /** Default true. */
+  fulfill?: boolean;
+  regulation?: 'gdpr' | 'ccpa' | 'lgpd' | 'pipeda' | 'vcdpa';
+  jurisdiction?: string;
+  test?: boolean;
+}
+
+export type DsarCaseStatus = 'pending' | 'scheduled' | 'processing' | 'completed' | 'completed_with_retention' | 'rejected' | 'cancelled';
+
+export interface RetentionLine {
+  category: string;
+  basis: 'legal_obligation' | 'legal_claims' | 'contract' | 'public_interest';
+  until?: string;
+}
+
+export interface DsarCaseTask {
+  system: string;
+  executorId: string | null;
+  taskId: string;
+  status: DsarCaseStatus | 'no_match';
+  requestId: string | null;
+  eta: string | null;
+  completedAt: string | null;
+  detail: string | null;
+  retention?: RetentionLine[];
+}
+
+/** A case across every connected system. */
+export interface DsarCase {
+  id: string;
+  type: DsarType;
+  canonicalType: string;
+  status: DsarCaseStatus;
+  requestStatus: DsarStatus;
+  cbid?: string;
+  source: 'product' | 'atlas' | 'rights_page' | 'admin' | null;
+  reason: string | null;
+  openedAt: string;
+  /** Nothing is erased anywhere before this. */
+  executeAfter: string | null;
+  graceDays: number | null;
+  closedAt: string | null;
+  /** False for a closure: no statutory clock. */
+  statutory: boolean;
+  dueAt: string | null;
+  verification: string | null;
+  trace: string | null;
+  subject: { emails: string[]; identity: SubjectIdentity | null };
+  skipSystems: string[];
+  fulfill: boolean | null;
+  cancelRequestedAt: string | null;
+  test: boolean;
+  tasks: DsarCaseTask[];
+  receiptUrl: string;
+  /** Lets the person who asked read this case through POST /api/v1/public/dsar/status. */
+  statusToken?: string;
+}
+
+/** One signed receipt for a case (Ed25519; verify with GET /v1/partner/jwks.json). */
+export interface DsarCaseReceipt {
+  receiptVersion: number;
+  caseId: string;
+  type: DsarType;
+  canonicalType: string;
+  status: DsarCaseStatus;
+  openedAt: string;
+  executeAfter: string | null;
+  closedAt: string | null;
+  verification: string | null;
+  trace: string | null;
+  subject: { emailHashes: string[]; identityHash?: string; atlasSubHash?: string };
+  systems: Array<{ system: string; executorId: string | null; requestId: string | null; status: string; completedAt: string | null; trace: string | null; retention?: RetentionLine[] }>;
+  issuedAt: string;
+  signature: { alg: 'Ed25519'; kid: string; value: string; covers?: string };
+}
+
+/** A site's rights-request settings. */
+export interface DsarSettings {
+  cbid: string;
+  /** Days an erasure or account closure waits before any system acts (0–30). 7 for a new site; 0 for one that existed before (opt-in). */
+  graceDays: number;
+  /** site: set explicitly; default: a new site's 7 days; legacy: an existing site, 0 until set. */
+  source: 'site' | 'default' | 'legacy';
+  updatedAt: number | null;
+}
+
+/** GET /v1/integrations/{app}/card. */
+export interface SubjectCard {
+  app: string;
+  openCases: Array<{ id: string; type: string; status: string; executeAfter: string | null; openedAt: string; receiptUrl: string }>;
+  consent: null;
 }
 
 /**
@@ -346,4 +524,20 @@ export interface PreferenceRecord {
   confirmed: boolean;
   updatedAt: number;
   version: number;
+}
+
+/** GET /v1/categories/registry — the reserved category templates (CMU-X15). */
+export interface CategoryRegistry {
+  version: 1;
+  standard: string[];
+  suite: Array<{
+    id: 'support_chat' | 'referrals';
+    stance: 'necessary_on_request' | 'opt_in_eu_uk';
+    fallback: 'preferences' | 'marketing';
+    /** By banner language. */
+    labels: Record<string, string>;
+    descriptions: Record<string, string>;
+    basis?: string[];
+    vendors?: Array<{ product: string; storage: string[] }>;
+  }>;
 }
