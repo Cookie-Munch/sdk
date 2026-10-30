@@ -4,7 +4,7 @@ export default defineConfig({
   // loads without the API client.
   entry: { index: 'src/index.ts', consent: 'src/consent.ts' },
   format: ['esm', 'cjs'],
-  dts: true,
+  dts: false,
   clean: true,
   sourcemap: true,
 });

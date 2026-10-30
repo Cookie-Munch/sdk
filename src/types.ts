@@ -280,7 +280,7 @@ export interface DsarRequest {
   test?: boolean;
   /** Its type in the suite vocabulary (`erasure` was stored as `deletion`). */
   canonicalType?: string;
-  /** The case's X-ForgeDeck-Trace, when it has one. */
+  /** The case's X-Trace-Id, when it has one. */
   trace?: string;
 }
 
@@ -307,7 +307,8 @@ export interface DsarCaseCreate {
   /** The person's own token from the site's sign-in issuer (aud `cookiemunch:<cbid>`). */
   subjectToken?: string;
   /** product and atlas need dsar:write and attest the person; admin (default) files it received. */
-  source?: 'product' | 'atlas' | 'admin';
+  /** `identity`: the site's sign-in provider. `atlas` is its former name. */
+  source?: 'product' | 'identity' | 'admin' | 'atlas';
   reason?: string;
   /** Connections not to ask: system names, connection ids, or `self`. */
   skipSystems?: string[];
@@ -322,7 +323,7 @@ export type DsarCaseStatus = 'pending' | 'scheduled' | 'processing' | 'completed
 
 export interface RetentionLine {
   category: string;
-  basis: 'legal_obligation' | 'legal_claims' | 'contract' | 'public_interest';
+  basis: 'legal_obligation' | 'legal_claims' | 'contract' | 'public_interest' | 'legitimate_interest';
   until?: string;
 }
 
@@ -346,7 +347,7 @@ export interface DsarCase {
   status: DsarCaseStatus;
   requestStatus: DsarStatus;
   cbid?: string;
-  source: 'product' | 'atlas' | 'rights_page' | 'admin' | null;
+  source: 'product' | 'identity' | 'rights_page' | 'admin' | 'atlas' | null;
   reason: string | null;
   openedAt: string;
   /** Nothing is erased anywhere before this. */
@@ -402,6 +403,31 @@ export interface SubjectCard {
   app: string;
   openCases: Array<{ id: string; type: string; status: string; executeAfter: string | null; openedAt: string; receiptUrl: string }>;
   consent: null;
+}
+
+/** POST /v1/integrations/{provider}/connect. */
+export interface IntegrationConnect {
+  /** The site the provider opens cases on. */
+  cbid: string;
+  /** The provider instance's secret key, used for this one call; never stored or echoed. */
+  providerKey: string;
+  /** Only for a provider with no built-in connector. A body value "{apiKey}" becomes the minted key. */
+  connector?: { url: string; method?: 'PUT' | 'POST'; body: Record<string, unknown> };
+}
+
+export interface IntegrationConnectResult {
+  connected?: boolean;
+  dryRun?: true;
+  provider: string;
+  cbid: string;
+  /** The minted key's metadata; the key itself is never returned. */
+  key: { prefix?: string; name: string; owner: string; scopes: string[]; cbids: string[]; expiresAt?: number | null; expiresInDays?: number };
+  request: { method: 'PUT' | 'POST'; url: string; status?: number };
+  /** Only on a dry run: the body that would be sent, the key shown as a placeholder. */
+  requestBody?: Record<string, unknown>;
+  /** Earlier keys for this provider and site, revoked now. */
+  revoked?: string[];
+  wouldRevoke?: string[];
 }
 
 /**

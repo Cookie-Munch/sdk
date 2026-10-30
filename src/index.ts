@@ -43,6 +43,8 @@ import type {
   DsarCaseReceipt,
   DsarSettings,
   SubjectCard,
+  IntegrationConnect,
+  IntegrationConnectResult,
   DsarStatus,
   ScoredVendor,
   VendorInput,
@@ -85,15 +87,15 @@ export interface CookieMunchOptions {
    */
   secretRecipient?: string;
   /**
-   * Extra headers on every request, e.g. `{ 'Idempotency-Key': '<forgedeck ref>:<run>' }` on a client made for
+   * Extra headers on every request, e.g. `{ 'Idempotency-Key': '<stack ref>:<run>' }` on a client made for
    * one create: a retry with the same key replays the first answer (secrets included) for 24 hours.
    */
   headers?: Record<string, string>;
 }
 
-/** Tags on a created resource (CMU-X29). `forgedeck_sandbox: true` can only be set at creation. */
+/** Tags on a created resource (CMU-X29). `stack_sandbox: true` can only be set at creation. */
 export type ResourceMetadata = Record<string, string | number | boolean>;
-/** Keep only resources whose tags match, e.g. `{ forgedeck_product: 'referalli' }`. */
+/** Keep only resources whose tags match, e.g. `{ stack_product: 'referalli' }`. */
 export interface MetadataFilter { metadata?: Record<string, string> }
 /** externalRef and metadata, accepted by every create (orgs, sites, webhooks, executors, DSARs, partner links). */
 export interface ResourceTagsInput {
@@ -129,9 +131,9 @@ export interface StandardPartnerLinkCreate extends ResourceTagsInput {
   externalId?: string;
   label?: string;
 }
-/** POST /v1/provision v2: the `cookiemunch` block of a forgedeck.yaml (see the forgedeck API map page). */
+/** POST /v1/provision v2: the `cookiemunch` block of a stack.yaml (see the provisioning API map page). */
 export interface ProvisionRequestV2 {
-  forgedeck: { ref?: string; product: string; env?: string; sandbox?: boolean };
+  stack: { ref?: string; product: string; env?: string; sandbox?: boolean };
   site: { domain: string; name?: string; aliases?: string[]; locales?: string[]; preset?: string; devOrigins?: string[] };
   cbid?: string;
   categories?: string[];
@@ -430,8 +432,8 @@ export interface CookiePreset {
 /** What applying a preset declared. */
 export interface CookiePresetResult {
   vendor: CookiePresetVendor | (string & {});
-  /** `manifest` when the rows came from the vendor's embed manifest. */
-  source?: 'manifest';
+  /** `builtin` (Cookie Munch's own rows, also while the vendor's manifest is invalid), `manifest` (its valid embed manifest), or `instance`. */
+  source?: 'builtin' | 'manifest' | 'instance';
   cookies: DeclaredCookie[];
   removed: string[];
   skipped?: Array<{ name: string; reason: string }>;
@@ -650,7 +652,7 @@ export interface ButtonParityFinding {
     | 'reject_missing_first_layer' | 'reject_missing_same_layer' | 'reject_hidden' | 'reject_below_fold' | 'reject_isolated'
     | 'reject_low_emphasis' | 'saturation_gap' | 'color_mismatch' | 'reject_text_low_contrast' | 'reject_styled_as_link'
     | 'font_size_gap' | 'font_weight_gap' | 'size_gap' | 'padding_gap' | 'border_mismatch' | 'reject_label_missing'
-    | 'reject_label_long' | 'confirmshaming' | 'custom_css_asymmetric'
+    | 'reject_label_long' | 'confirmshaming' | 'custom_css_asymmetric' | 'customize_label_clash'
     // WCAG contrast findings (each carries `wcag`).
     | 'text_low_contrast' | 'link_low_contrast' | 'button_text_low_contrast' | 'focus_ring_low_contrast'
     | 'toggle_low_contrast' | 'control_boundary_low_contrast';
@@ -1902,7 +1904,15 @@ export type ExecutorPresetName = string;
 export interface DsarExecutorPresetInput {
   preset: ExecutorPresetName;
   presetVersion?: number;
-  secretKey: string;
+  /** The connection's key. Send this or `mintFrom`. */
+  secretKey?: string;
+  /**
+   * A partner id (it registered an `executorKeyUrl`: chatly, forumulate, referalli, …) that mints the key for
+   * the site under its partner link, in place of `secretKey`. The connection is scoped to that site.
+   */
+  mintFrom?: string;
+  /** With `mintFrom`: the partner account the key is minted for. Default: the one the site's live link for that partner names. */
+  externalId?: string;
   system?: string;
   baseUrl?: string;
   orgId?: string;
@@ -1965,6 +1975,8 @@ export interface DsarExecutorDryRun {
   /** Each field that would change. */
   diff: ConfigChange[];
   warnings?: Array<{ field: string; reason: string }>;
+  /** With `mintFrom`: who would mint the key, for which account and site. Nothing is minted. */
+  mint?: { partner: string; externalId: string | null; cbid: string; detail: string };
 }
 
 /** Where a webhook check stopped. */
@@ -2181,13 +2193,13 @@ export interface CookieMunchClient {
       name: string,
       opts?: { mintKey?: boolean; keyScopes?: string[]; keyExpiresInDays?: number; keyOwner?: string } & ResourceTagsInput,
     ): Promise<{ org: { id: string; name: string; role: string }; apiKey?: string; keyError?: string }>;
-    /** Hard-delete a SANDBOX organisation of this account (created with metadata.forgedeck_sandbox). Anything else: 403 not_a_sandbox. */
+    /** Hard-delete a SANDBOX organisation of this account (created with metadata.stack_sandbox). Anything else: 403 not_a_sandbox. */
     deleteSandbox(id: string): Promise<SandboxPurge>;
   };
   /** Tags on any created resource (CMU-X29). */
   metadata: {
     get(type: TaggedType, id: string): Promise<ResourceTags>;
-    /** Merge tags (null removes one). `forgedeck_sandbox` cannot be set here. `{ dryRun: true }` answers with the diff. */
+    /** Merge tags (null removes one). `stack_sandbox` cannot be set here. `{ dryRun: true }` answers with the diff. */
     update(type: TaggedType, id: string, metadata: Record<string, string | number | boolean | null>, opts?: { dryRun?: boolean }): Promise<ResourceTagsUpdate>;
   };
   /** Partner links in the suite-standard shape (CMU-X34). */
@@ -2196,7 +2208,7 @@ export interface CookieMunchClient {
     create(input: StandardPartnerLinkCreate): Promise<StandardPartnerLink>;
     revoke(id: string): Promise<StandardPartnerLink>;
   };
-  /** What `forgedeck env` writes for a product provisioned with this forgedeck ref: names, values, secret references. */
+  /** What `env` writes for a product provisioned with this stack ref: names, values, secret references. */
   provisionEnv(ref: string): Promise<ProvisionEnv>;
   sites: {
     list(opts?: MetadataFilter): Promise<Site[]>;
@@ -2435,11 +2447,11 @@ export interface CookieMunchClient {
      * as `dsar.marked_test`; afterwards `delete` works on it. `changed` is false on a repeat.
      */
     markTest(id: string): Promise<{ request: DsarRequest; changed: boolean }>;
-    /** Requests carrying one X-ForgeDeck-Trace (`GET /v1/dsar?trace=`). */
+    /** Requests carrying one X-Trace-Id (`GET /v1/dsar?trace=`). */
     listByTrace(trace: string): Promise<DsarRequest[]>;
     /**
      * Open a case fanned out to every connected system (POST /v1/dsar/requests). `opts.idempotencyKey`
-     * (16–128 chars) makes a retry answer the same case; `opts.trace` passes your X-ForgeDeck-Trace on.
+     * (16–128 chars) makes a retry answer the same case; `opts.trace` passes your X-Trace-Id on.
      */
     openCase(input: DsarCaseCreate, opts?: { idempotencyKey?: string; trace?: string }): Promise<DsarCase>;
     /** One case across every system. */
@@ -2738,7 +2750,7 @@ export interface CookieMunchClient {
     remove(check: string, opts?: { cbid?: string; subject?: string }): Promise<void>;
   };
   /**
-   * The site's embed manifest: the tenant variant of `/.well-known/forgedeck-embed.json` — every
+   * The site's embed manifest: the tenant variant of `/.well-known/cookiemunch-embed.json` — every
    * origin by CSP directive and every browser key the embed writes for this site's config. Public.
    */
   embedManifest(cbid: string): Promise<EmbedManifest>;
@@ -2890,10 +2902,16 @@ export interface CookieMunchClient {
     get(cbid: string): Promise<DsarSettings>;
     set(cbid: string, input: { graceDays: number }): Promise<DsarSettings>;
   };
-  /** Cards for support, CRM and helpdesk sidebars. Requires dsar:read. */
+  /** Cards for support, CRM and helpdesk sidebars (dsar:read), and one-call identity-provider connect (dsar:write). */
   integrations: {
     /** Open rights requests for one person, by identity (preferred) or email. */
     subjectCard(app: string, person: { iss: string; sub: string } | { email: string }): Promise<SubjectCard>;
+    /**
+     * Connect an identity provider's privacy orchestrator (`atlas`, or any provider with `connector`): mints a
+     * dsar:write key locked to `cbid` and hands it to the provider, authorised with `providerKey`. The minted key
+     * is never returned (only its prefix). `{ dryRun: true }` mints and sends nothing.
+     */
+    connect(provider: string, input: IntegrationConnect, opts?: { dryRun?: boolean }): Promise<IntegrationConnectResult>;
   };
   /** One person's consent across every site in the org, by the subjectId your apps attach. */
   subjects: {
@@ -3185,7 +3203,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       openCase: (input, o) =>
         request('POST', '/dsar/requests', input, false, {
           ...(o?.idempotencyKey ? { 'Idempotency-Key': o.idempotencyKey } : {}),
-          ...(o?.trace ? { 'X-ForgeDeck-Trace': o.trace } : {}),
+          ...(o?.trace ? { 'X-Trace-Id': o.trace } : {}),
         }) as Promise<DsarCase>,
       getCase: (id) => get(`/dsar/requests/${enc(id)}`) as Promise<DsarCase>,
       cancelCase: (id) => request('POST', `/dsar/requests/${enc(id)}/cancel`) as Promise<DsarCase>,
@@ -3470,6 +3488,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     },
     integrations: {
       subjectCard: (app, person) => get(`/integrations/${enc(app)}/card${qs(person as Record<string, string>)}`) as Promise<SubjectCard>,
+      connect: (provider, input, o) => request('POST', `/integrations/${enc(provider)}/connect${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<IntegrationConnectResult>,
     },
     subjects: {
       consent: (subjectId) =>

@@ -1,11 +1,12 @@
 /**
- * Types for `window.__fdConsent`, the shared consent API any embed can code against — a chat
+ * Types for `window.__consent` (also `window.__fdConsent`, the same object under its first name), the shared
+ * consent API any embed can code against — a chat
  * widget, a referral snippet, an analytics tag — whatever CMP the page runs. Cookie Munch sets
  * it natively; `fd-consent-shim.js` sets the same object over Cookiebot, OneTrust or no CMP.
  * Type-only: importing this module adds nothing to a bundle.
  *
  *   import type { FdConsent, FdConsentQueue } from '@cookiemunch/sdk';
- *   const fd = (window.__fdConsent ??= { q: [] });
+ *   const fd = (window.__consent ??= { q: [] });
  *   if ('version' in fd) fd.on('change', (s) => …); else fd.q.push(['on', 'change', (s) => …]);
  *
  * `version` changes only with a breaking change; new members do not bump it.
@@ -63,13 +64,16 @@ export type FdQueuedCall =
   | ['request', string, FdRequestOptions, (granted: boolean) => void]
   | ['identify', string];
 
-/** What an embed that loads first creates: `window.__fdConsent = window.__fdConsent || { q: [] }`. */
+/** What an embed that loads first creates: `window.__consent = window.__consent || { q: [] }` (or the same under `__fdConsent`). */
 export interface FdConsentQueue {
   q: FdQueuedCall[];
 }
 
 declare global {
   interface Window {
+    /** The shared consent API (or, before Cookie Munch loads, a queue). */
+    __consent?: FdConsent | FdConsentQueue;
+    /** The same object as `__consent`, under its first name. Kept for good: existing embeds read it. */
     __fdConsent?: FdConsent | FdConsentQueue;
   }
 }

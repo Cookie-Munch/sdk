@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## Unreleased
+
+- Added: `integrations.connect(provider, { cbid, providerKey, connector? }, { dryRun? })`: one-call connect for an identity provider's privacy orchestrator (`POST /v1/integrations/{provider}/connect`).
+- Changed: `ProvisionRequestV2` names its block `stack` (same fields); its site tags are `stack_product`, `stack_env`, `stack_ref` and `stack_sandbox`. The trace header is `X-Trace-Id`.
+
 ## 0.7.1 (2026-10-24)
 
 - Changed: `ConsentInsights.byLanguage` and `timeToDecision` are now filled in — opt-in by the banner's language, and a time-to-decision histogram with its median bucket — or `null` with `notRecorded` saying why.
@@ -23,7 +28,7 @@ Every published release, newest first. Dates are the day the version was cut.
 - Added: keys — `keys.self()`, `keys.rollSelf()`, `keys.vend({ scopes, ttlSeconds })` (short-lived, at most 12 h), `keys.listStandard()`, `keys.revokeLeaked(report)`; keys can be minted with `scopes`, `cbids` and `expiresInDays`.
 - Added: `partnerLinks.list` / `create` / `revoke` (any partner, scoped), and `metadata.get` / `update` with `metadata` and `externalRef` on sites, webhooks, connections, rights requests and orgs; `?metadata[key]=` list filters; `deleteSandbox` on sandbox sites and orgs.
 - Added: `sites.cookieSuggestions` / `declareCookieSuggestions`, `importCookieManifest` (any vendor's embed manifest) and `removeCookiePreset` for custom presets; `embedManifest(cbid)`; first-class cookie presets for `referalli`, `firstpromoter`, `partnerstack`, `tapfiliate` and `impact` (`referally` is a deprecated alias).
-- Added: `sites.getBrand` / `setBrand` (DTCG brand.json import with a read-back), `consent.insights`, `categoryRegistry()`, `entitlements()`, `provisionEnv(ref)`, and `provision(input, { fromStep })` with the forgedeck (v2) body.
+- Added: `sites.getBrand` / `setBrand` (DTCG brand.json import with a read-back), `consent.insights`, `categoryRegistry()`, `entitlements()`, `provisionEnv(ref)`, and `provision(input, { fromStep })` with the version 2 body.
 - Added: `healthWaivers.list` / `set` / `remove`, `auditSink.get` / `set` / `remove` (CloudEvents), `webhooks.replay(id, since)`, `audit(limit, { actor: 'self' })`, `fulfillment.recheckExecutor` and `executorHealthHistory`.
 - Added: `readConsent(source, { requireSigned })`, `verifyDecisionSignature`, `verifyToken` (consent tokens, against the partner JWKS) and `consentSignaturePayload`.
 - Added: the `X-Secret-Recipient` option seals every once-shown secret; `Idempotency-Key` on creates.

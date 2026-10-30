@@ -325,13 +325,13 @@ describe('CookieMunchApiError', () => {
 });
 
 describe('orchestrator-v2 cases (CMU-X21–X24, X37)', () => {
-  it('openCase sends the Idempotency-Key and X-ForgeDeck-Trace headers', async () => {
+  it('openCase sends the Idempotency-Key and X-Trace-Id headers', async () => {
     const { fc: cm, calls } = client([{ status: 201, json: { id: 'dsr_1' } }]);
     await cm.dsar.openCase({ cbid: 's1', type: 'closure', subject: { emails: ['a@b.com'] }, source: 'product' }, { idempotencyKey: 'key-0000000000000001', trace: '01J9ZK3Q7X5R2T8M4N6P0B1C2D' });
     expect(calls[0]).toMatchObject({ method: 'POST', body: { cbid: 's1', type: 'closure' } });
     expect(calls[0]!.url).toMatch(/\/v1\/dsar\/requests$/);
     expect(calls[0]!.headers['idempotency-key']).toBe('key-0000000000000001');
-    expect(calls[0]!.headers['x-forgedeck-trace']).toBe('01J9ZK3Q7X5R2T8M4N6P0B1C2D');
+    expect(calls[0]!.headers['x-trace-id']).toBe('01J9ZK3Q7X5R2T8M4N6P0B1C2D');
   });
 
   it('reaches every new path', async () => {
