@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.9.1 (2026-10-30)
+
+- Added: cookie preset params `publishableKey` (Atlas: read the instance's own list by its public `GET /v1/cookie_manifest` when the site's Atlas key cannot), and Chatly's `storage` and `tracking` (the widget's own options, which decide whether `chatly:seen` and `chatly:utm` are declared).
+- Changed: a preset result's `instance` can come from any vendor's embed manifest (`instance`), not only Atlas.
+
 ## 0.9.0 (2026-10-30)
 
 - Added: `regulatory.upcomingForSite(cbid, { days?, minShare? })`: laws taking effect where a site's visitors are (`GET /v1/sites/{cbid}/regulatory/upcoming`).

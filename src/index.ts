@@ -61,7 +61,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.9.0';
+export const SDK_VERSION = '0.9.1';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -363,12 +363,18 @@ export interface CookieSuggestionsDeclared {
   diff?: DeclarationDiff;
 }
 
-/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`; Chatly `publicId`/`dragging`/`category`; referral and affiliate presets (referalli, firstpromoter, partnerstack, tapfiliate, impact) `cookieDomain`/`cookieDays`/`category`, referalli `legacyName`, impact `campaignId`. */
+/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`/`publishableKey`; Chatly `publicId`/`dragging`/`storage`/`tracking`/`category`; referral and affiliate presets (referalli, firstpromoter, partnerstack, tapfiliate, impact) `cookieDomain`/`cookieDays`/`category`, referalli `legacyName`, impact `campaignId`. */
 export interface CookiePresetParams {
   frontendApiHost?: string;
   crossSubdomainCookies?: boolean;
+  /** Atlas: your publishable key; with frontendApiHost, the instance's declarations are read by Atlas's public GET /v1/cookie_manifest when the site's Atlas key cannot read them. */
+  publishableKey?: string;
   publicId?: string;
   dragging?: boolean;
+  /** Chatly: the widget's own storage option, as passed to Chatly.init; analytics 'deny' leaves chatly:seen out, marketing 'deny' chatly:utm. */
+  storage?: 'allow' | 'deny' | 'on-open' | { functional?: 'allow' | 'deny' | 'on-open'; analytics?: 'allow' | 'deny' | 'on-open'; marketing?: 'allow' | 'deny' | 'on-open' };
+  /** Chatly: the widget's own tracking option; false, or visits false, leaves chatly:seen out. */
+  tracking?: boolean | { visits?: boolean; exitIntent?: boolean; scrollDepth?: boolean };
   category?: string;
   cookieDomain?: string;
   cookieDays?: number;
