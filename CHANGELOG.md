@@ -2,8 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
-## Unreleased
+## 0.8.0 (2026-10-30)
 
+- Added: `mintFrom` and `externalId` on the DSAR executor connect method: a partner with an `executorKeyUrl` mints the executor key, so `secretKey` is optional. The dry run's `mint` shows the plan.
+- Changed: a preset's `source` is typed `builtin | manifest | instance`.
 - Added: `integrations.connect(provider, { cbid, providerKey, connector? }, { dryRun? })`: one-call connect for an identity provider's privacy orchestrator (`POST /v1/integrations/{provider}/connect`).
 - Changed: `ProvisionRequestV2` names its block `stack` (same fields); its site tags are `stack_product`, `stack_env`, `stack_ref` and `stack_sandbox`. The trace header is `X-Trace-Id`.
 
