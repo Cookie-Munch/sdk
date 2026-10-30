@@ -61,7 +61,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.8.0';
+export const SDK_VERSION = '0.9.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -313,7 +313,11 @@ export interface CookiePresetManifest {
   fetchedAt?: number;
   /** Why the latest read was not accepted, by rule (1–6). */
   errors?: Array<{ rule?: number; path?: string; code?: string; message: string }>;
-  warnings?: Array<{ rule?: number; path?: string; code?: string; message: string }>;
+  /**
+   * About the copy in effect: `entry_skipped` / `storage_entry_skipped` (one entry was unreadable and left out; the
+   * rest still applies, and a left-out storage entry gives `name`), or `short_notice`.
+   */
+  warnings?: Array<{ rule?: number; path?: string; code?: string; message: string; name?: string }>;
 }
 
 /** PUT /v1/sites/:cbid/cookies/presets/custom — any vendor's embed manifest, by URL or as a body. */
@@ -690,6 +694,8 @@ export interface ButtonParityLint {
   /** 100 minus 20 per warning and 5 per notice, floored at 0. */
   score: number;
   suggestedReject: SuggestedRejectStyle[];
+  /** Laws taking effect within 90 days where at least 1% of the site's recent decisions come from. Absent when none. */
+  regulatoryWarnings?: Array<{ code: 'law_upcoming'; law: string; effective: string; daysUntil: number; trafficShare: number; message: string }>;
 }
 
 /**
@@ -1649,6 +1655,43 @@ export interface RegulatoryFeedResult {
   regulations: RegulationSummary[];
 }
 
+/** A law taking effect soon where a site's visitors are. */
+export interface SiteUpcomingRegulation {
+  id: string;
+  name: string;
+  jurisdiction: string;
+  effective: string;
+  /** Whole days from today; 0 = takes effect today. */
+  daysUntil: number;
+  /** Share (0–1) of the site's decisions in the window from where this law applies. */
+  trafficShare: number;
+  obligations: string[];
+  /** For a US state law: what changes for the banner. */
+  changes?: {
+    universalOptOut: boolean;
+    universalOptOutFrom?: string;
+    sensitiveOptIn: boolean;
+    minorOptInUnder: number;
+    minorsAds: 'opt-in' | 'prohibited';
+  };
+  source: string;
+}
+
+/** `GET /v1/sites/{cbid}/regulatory/upcoming`. */
+export interface SiteUpcomingRegulations {
+  reviewedAt: string;
+  ageDays: number;
+  reviewAfterDays: number;
+  stale: boolean;
+  days: number;
+  minShare: number;
+  /** The traffic window, epoch ms: the last 30 days. */
+  window: { from: number; to: number };
+  /** Decisions recorded in the window. */
+  decisions: number;
+  upcoming: SiteUpcomingRegulation[];
+}
+
 export interface AiInspectInput {
   prompt: string;
   purpose: string;
@@ -2588,6 +2631,11 @@ export interface CookieMunchClient {
     feed(jurisdictions?: string[]): Promise<RegulatoryFeedResult>;
     /** What takes effect within `days` (default 180), soonest first. */
     upcoming(days?: number): Promise<RegulatoryFeedResult>;
+    /**
+     * `GET /v1/sites/{cbid}/regulatory/upcoming`: what takes effect within `days` (default 90)
+     * where at least `minShare` (default 0.01) of this site's last 30 days of decisions came from.
+     */
+    upcomingForSite(cbid: string, opts?: { days?: number; minShare?: number }): Promise<SiteUpcomingRegulations>;
   };
   /** AI governance: policy, the inline gateway, inventory and lineage. */
   ai: {
@@ -3299,6 +3347,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       feed: (jurisdictions) =>
         get(`/regulatory/feed${qs({ jurisdictions: jurisdictions?.join(',') })}`) as Promise<RegulatoryFeedResult>,
       upcoming: (days) => get(`/regulatory/upcoming${qs({ days })}`) as Promise<RegulatoryFeedResult>,
+      upcomingForSite: (cbid, opts) =>
+        get(`/sites/${enc(cbid)}/regulatory/upcoming${qs({ days: opts?.days, minShare: opts?.minShare })}`) as Promise<SiteUpcomingRegulations>,
     },
     ai: {
       getPolicy: () => get('/ai/policy') as Promise<{ policy: unknown; configured: boolean }>,

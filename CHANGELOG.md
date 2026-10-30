@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.9.0 (2026-10-30)
+
+- Added: `regulatory.upcomingForSite(cbid, { days?, minShare? })`: laws taking effect where a site's visitors are (`GET /v1/sites/{cbid}/regulatory/upcoming`).
+- Changed: a preset manifest's `warnings` name the entry Cookie Munch dropped (`name`), now that one bad entry no longer invalidates the whole manifest.
+
 ## 0.8.0 (2026-10-30)
 
 - Added: `mintFrom` and `externalId` on the DSAR executor connect method: a partner with an `executorKeyUrl` mints the executor key, so `secretKey` is optional. The dry run's `mint` shows the plan.

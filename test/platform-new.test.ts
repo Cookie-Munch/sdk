@@ -85,6 +85,14 @@ describe('regulatory', () => {
     await fc.regulatory.upcoming();
     expect(calls[0]!.url).not.toContain('days=');
   });
+
+  it('reads a site’s upcoming laws with a horizon and a traffic threshold', async () => {
+    const { fc, calls } = client([{ upcoming: [] }, { upcoming: [] }]);
+    await fc.regulatory.upcomingForSite('cb 1', { days: 60, minShare: 0.05 });
+    expect(calls[0]!.url).toBe('https://api.example.com/v1/sites/cb%201/regulatory/upcoming?days=60&minShare=0.05');
+    await fc.regulatory.upcomingForSite('cb1');
+    expect(calls[1]!.url).toBe('https://api.example.com/v1/sites/cb1/regulatory/upcoming');
+  });
 });
 
 describe('fulfillment: executor webhooks and dry runs', () => {
