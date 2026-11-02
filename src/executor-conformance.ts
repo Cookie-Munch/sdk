@@ -73,7 +73,7 @@ export function canaryIdentityFor(canaryEmail: string): { iss: string; sub: stri
 
 /** Every rule, in the order they run. */
 export const CONFORMANCE_RULES: ReadonlyArray<{ id: string; title: string }> = [
-  { id: 'auth.required', title: 'A request without the credential is refused (401 or 403).' },
+  { id: 'auth.required', title: 'A request without the credential is refused (401, 403, or a 404 without X-Version).' },
   { id: 'lookup.email.found', title: 'The canary subject is found by its email.' },
   { id: 'lookup.identity.found', title: 'The canary subject is found by its identity alone (iss + sub), and it is the same subject.' },
   { id: 'lookup.unknown.no_match', title: 'An address nobody has answers { subjectId: null, status: "no_match" }.' },
@@ -168,7 +168,8 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
     fail('auth.required', said(anon));
     return report();
   }
-  if (anon.status === 401 || anon.status === 403) pass('auth.required');
+  // A bare 404 (no X-Version) is a refusal that does not even admit the endpoint exists.
+  if (anon.status === 401 || anon.status === 403 || (anon.status === 404 && !anon.version)) pass('auth.required');
   else fail('auth.required', `without a credential: ${said(anon)}`);
 
   // lookups

@@ -2,6 +2,16 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.10.0 (2026-11-01)
+
+- Added: `fulfillment.approveTask` / `rejectTask` for an erasure parked by `requireApproval`; `requireApproval` on connections; `verify: 1 | 'warn'` on `connectExecutor`; `listByOrigin` (`origin: "account_deletion"`).
+- Added: `keepOldDomain` on `sites.update`.
+
+- Added: `createRightsHandlers()` from `@cookiemunch/sdk/rights`: the cm-standard-v2 executor contract as Fetch API handlers built from your callbacks. It covers the key check, signed request ids, `executeAfter`, cancel, idempotency and the canary.
+- Changed: the conformance kit's `auth.required` also passes a bare `404` (no `X-Version`) for a request without the credential.
+- Added: `secret` on `webhooks.create` and `webhooks.rollSecret(id, { secret })`: your own signing secret, stored and not echoed back.
+- Added: webhook `events` take `*` and `<family>.*`; a subscription's `matches` lists the events its patterns take today.
+
 ## 0.9.1 (2026-10-30)
 
 - Added: cookie preset params `publishableKey` (Atlas: read the instance's own list by its public `GET /v1/cookie_manifest` when the site's Atlas key cannot), and Chatly's `storage` and `tracking` (the widget's own options, which decide whether `chatly:seen` and `chatly:utm` are declared).

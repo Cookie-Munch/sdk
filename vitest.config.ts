@@ -10,6 +10,7 @@ export default defineConfig({
     alias: [
       { find: /^@cookiemunch\/sdk$/, replacement: here('./src/index.ts') },
       { find: /^@cookiemunch\/sdk\/consent$/, replacement: here('./src/consent.ts') },
+      { find: /^@cookiemunch\/sdk\/rights$/, replacement: here('./src/rights.ts') },
     ],
   },
   esbuild: { jsx: 'automatic' },

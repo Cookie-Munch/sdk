@@ -72,6 +72,8 @@ export interface SiteUpdate {
   domain?: string;
   name?: string | null;
   aliases?: string[];
+  /** With a new domain: keep the old one as an alias, so consent is still accepted there while both run. Remove it from aliases when the move is done. */
+  keepOldDomain?: boolean;
 }
 
 export interface SiteUpdateResult {
@@ -309,6 +311,8 @@ export interface DsarCaseCreate {
   /** product and atlas need dsar:write and attest the person; admin (default) files it received. */
   /** `identity`: the site's sign-in provider. `atlas` is its former name. */
   source?: 'product' | 'identity' | 'admin' | 'atlas';
+  /** The person deleted their own account. Default for a closure from product or identity. */
+  origin?: 'account_deletion';
   reason?: string;
   /** Connections not to ask: system names, connection ids, or `self`. */
   skipSystems?: string[];
@@ -337,6 +341,12 @@ export interface DsarCaseTask {
   completedAt: string | null;
   detail: string | null;
   retention?: RetentionLine[];
+  /** Present while this erasure waits for `approveTask` / `rejectTask` (status reads pending). */
+  awaitingApproval?: true;
+  /** What the system said the erasure would remove. */
+  preview?: { at: number; text?: string; error?: string };
+  /** This row's own account at that system, when one email matched several. */
+  subjectId?: string;
 }
 
 /** A case across every connected system. */
@@ -348,6 +358,8 @@ export interface DsarCase {
   requestStatus: DsarStatus;
   cbid?: string;
   source: 'product' | 'identity' | 'rights_page' | 'admin' | 'atlas' | null;
+  /** account_deletion: the person deleted their own account. */
+  origin: 'account_deletion' | null;
   reason: string | null;
   openedAt: string;
   /** Nothing is erased anywhere before this. */

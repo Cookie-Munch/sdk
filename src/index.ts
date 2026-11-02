@@ -61,7 +61,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.9.1';
+export const SDK_VERSION = '0.10.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -1114,8 +1114,12 @@ export interface WebhookSubscription {
   id: string;
   orgId: string;
   url: string;
+  /** Shown once on create, and only when Cookie Munch generated it. */
   secret?: string;
+  /** The patterns as given: event names, `*`, `<family>.*`. */
   events: string[];
+  /** The events those patterns take today. A wildcard also takes events added later. */
+  matches?: string[];
   cbid: string | null;
   active: boolean;
   createdAt: number;
@@ -1490,8 +1494,11 @@ export interface DsarExportResult {
 /** Input for creating a webhook subscription. */
 export interface WebhookCreate {
   url: string;
+  /** Event names, `*` (every event; needs a full-access key) or `<family>.*` such as `consent.*`. */
   events: string[];
   cbid?: string;
+  /** Your own signing secret, 32–256 printable characters. Not echoed back; omit it and one is generated and returned once. */
+  secret?: string;
 }
 
 /** Fields to change on a webhook subscription. Only those present are sent. */
@@ -1908,6 +1915,8 @@ export interface DsarExecutor {
   lastSignedCompletionAt?: number | null;
   /** Where signed cm-standard-v2 completions go. */
   completionsUrl?: string;
+  /** True: its erasures wait (status `awaiting_approval`) for `approveTask` or `rejectTask`. */
+  requireApproval?: boolean;
   /** On create only: the completion secret, shown this once. */
   completionSecret?: string;
 }
@@ -1975,6 +1984,8 @@ export interface DsarExecutorPresetInput {
   label?: string;
   /** Default 2. */
   orchestrator?: 1 | 2;
+  /** Park its erasures for a person's approval. Default false. */
+  requireApproval?: boolean;
 }
 
 /** What `upgradeExecutorPreset` takes: a version, a preset to adopt, or params to add. */
@@ -2081,9 +2092,15 @@ export interface DsarExecutorInput {
   profile: ExecutorProfile;
   /** Default 2. */
   orchestrator?: 1 | 2;
+  /** Park its erasures for a person's approval. Default false. */
+  requireApproval?: boolean;
 }
 
-export type DsarExecutorCreated = DsarExecutor;
+export type DsarExecutorCreated = DsarExecutor & {
+  warnings?: Array<{ field: string; reason: string }>;
+  /** With `connectExecutor(…, { verify })`: what the canary probe found. */
+  verify?: ExecutorTestResult;
+};
 
 /** The fields `updateExecutor` may change. */
 export interface DsarExecutorPatch {
@@ -2100,18 +2117,23 @@ export interface DsarExecutorPatch {
   presetPinned?: boolean;
   /** Opt in to (2) or out of (1) orchestrator v2. */
   orchestrator?: 1 | 2;
+  /** Park its erasures for approval; false stops parking new ones (parked ones still wait). */
+  requireApproval?: boolean;
 }
 
 /** One entry in a fulfilment task's status history. */
 export interface DsarTaskEvent {
   at: number;
   kind: 'created' | 'changed' | 'version_changed';
-  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+  status: DsarTaskStatus;
   detail?: string;
   outcome?: DsarTaskOutcome;
   scheduledFor?: number;
   externalRef?: string;
 }
+
+/** `awaiting_approval`: an erasure parked until `approveTask` (→ pending) or `rejectTask` (→ failed). */
+export type DsarTaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled' | 'awaiting_approval';
 
 /** What a task's answer means for the person. `exported` only once the export was fetched. */
 export type DsarTaskOutcome = 'located' | 'exported' | 'erased' | 'no_record' | 'done_without_artifact' | 'not_applicable' | 'already_erased' | 'external_identity';
@@ -2120,7 +2142,7 @@ export type DsarTaskOutcome = 'located' | 'exported' | 'erased' | 'no_record' | 
 export interface DsarTaskLogEntry {
   id?: string;
   system?: string;
-  step: 'lookup' | 'open' | 'poll' | 'export' | 'grant';
+  step: 'lookup' | 'open' | 'poll' | 'export' | 'grant' | 'cancel' | 'preview';
   method: string;
   path: string;
   /** Absent when the system never answered. */
@@ -2145,7 +2167,7 @@ export interface DsarTask {
   requestId: string;
   system: string;
   operation: FulfillmentOp;
-  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+  status: DsarTaskStatus;
   detail?: string;
   outcome?: DsarTaskOutcome;
   attempts: number;
@@ -2161,6 +2183,12 @@ export interface DsarTask {
   upstreamVersions?: string[];
   /** The system was redeployed while this task was in flight. */
   versionChanged: boolean;
+  /** For an erasure awaiting approval: what the system said it would remove (≤4000 chars, redacted). */
+  preview?: { at: number; text?: string; error?: string };
+  /** The account at that system, when one email matched several there (one task each). */
+  subjectKey?: string;
+  /** How the requester was verified, as sent to the system. */
+  verification?: { method: 'code' | 'session' | 'account_link' | 'attested' | 'none' | 'controller'; emailVerified: boolean };
 }
 
 /** What testing a connection found. Nothing was filed. */
@@ -2183,6 +2211,8 @@ export interface ExecutorTestResult {
   skipped?: Array<{ step: string; reason: 'insufficient_scope' }>;
   /** Present when the test used the org canary address, with the address in `email`. */
   canary?: boolean;
+  /** The accounts the lookup found, when one email matched several (subjectLookup.idsPath). */
+  subjects?: string[];
   email?: string;
   /** Every upstream answer, as the system gave it (credentials removed). */
   exchanges: DsarTaskLogEntry[];
@@ -2498,6 +2528,8 @@ export interface CookieMunchClient {
     markTest(id: string): Promise<{ request: DsarRequest; changed: boolean }>;
     /** Requests carrying one X-Trace-Id (`GET /v1/dsar?trace=`). */
     listByTrace(trace: string): Promise<DsarRequest[]>;
+    /** Requests with one origin (`GET /v1/dsar?origin=`): `account_deletion`, those a person's own account deletion opened. */
+    listByOrigin(origin: 'account_deletion'): Promise<DsarRequest[]>;
     /**
      * Open a case fanned out to every connected system (POST /v1/dsar/requests). `opts.idempotencyKey`
      * (16–128 chars) makes a retry answer the same case; `opts.trace` passes your X-Trace-Id on.
@@ -2677,7 +2709,14 @@ export interface CookieMunchClient {
      * Connect one. The secret is stored encrypted and never returned; the response carries
      * the URL to point that system's webhook at.
      */
-    connectExecutor(input: (DsarExecutorInput | DsarExecutorPresetInput) & ResourceTagsInput): Promise<DsarExecutorCreated>;
+    connectExecutor(
+      input: (DsarExecutorInput | DsarExecutorPresetInput) & ResourceTagsInput,
+      /**
+       * `verify: true` probes it first (a canary locate; no erasure is sent) and refuses a failing one
+       * (422 `verify_failed`, nothing stored); `'warn'` stores it with the verdict in `warnings`.
+       */
+      opts?: { verify?: true | 'warn' },
+    ): Promise<DsarExecutorCreated>;
     /**
      * Change a connection in place. Only what you send changes, and the stored credential
      * is kept unless you pass a new `secretKey` — so adding a field to a profile does not
@@ -2713,6 +2752,10 @@ export interface CookieMunchClient {
      * its behalf (`log`, redacted, 30 days) and whether that system's version changed mid-way.
      */
     task(requestId: string, taskId: string): Promise<DsarTask>;
+    /** Approve an erasure awaiting approval: it is sent now. Audited with your key. 409 when it is not waiting. */
+    approveTask(requestId: string, taskId: string): Promise<DsarTask>;
+    /** Reject an erasure awaiting approval: nothing is sent and the task fails with `reason`. Audited. */
+    rejectTask(requestId: string, taskId: string, opts?: { reason?: string }): Promise<DsarTask>;
     /**
      * Try a connection against one email without filing anything: runs the lookup, returns
      * the raw (redacted) upstream answers and what a real request would have sent.
@@ -2900,8 +2943,8 @@ export interface CookieMunchClient {
     /** Change or pause a subscription. `{ active: false }` pauses without deleting it. */
     update(id: string, patch: WebhookUpdate): Promise<WebhookSubscription>;
     delete(id: string): Promise<void>;
-    /** Rotate the signing secret. The new secret is returned once. */
-    rollSecret(id: string): Promise<{ secret: string }>;
+    /** Rotate the signing secret. A generated one is returned once; `{ secret }` you choose is not echoed (`rolled: true`). */
+    rollSecret(id: string, opts?: { secret?: string }): Promise<{ secret?: string; rolled?: boolean }>;
     /** Send a signed test event now and report what the endpoint answered. */
     test(id: string): Promise<WebhookTestResult>;
     /** Deliveries that failed every retry, newest first. */
@@ -3254,6 +3297,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       },
       markTest: (id) => request('POST', `/dsar/${enc(id)}/mark-test`) as Promise<{ request: DsarRequest; changed: boolean }>,
       listByTrace: (trace) => get(`/dsar${qs({ trace })}`) as Promise<DsarRequest[]>,
+      listByOrigin: (origin) => get(`/dsar${qs({ origin })}`) as Promise<DsarRequest[]>,
       openCase: (input, o) =>
         request('POST', '/dsar/requests', input, false, {
           ...(o?.idempotencyKey ? { 'Idempotency-Key': o.idempotencyKey } : {}),
@@ -3375,7 +3419,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       reportTask: (taskId, ok, error) => request('POST', `/dsar/agent/tasks/${enc(taskId)}/result`, { ok, ...(error !== undefined ? { error } : {}) }),
       executors: (o) => get(`/dsar/executors${metaQs(o)}`) as Promise<DsarExecutor[]>,
       executor: (id) => get(`/dsar/executors/${enc(id)}`) as Promise<DsarExecutor>,
-      connectExecutor: (input) => request('POST', '/dsar/executors', input) as Promise<DsarExecutorCreated>,
+      connectExecutor: (input, o) =>
+        request('POST', `/dsar/executors${qs({ verify: o?.verify ? (o.verify === 'warn' ? 'warn' : '1') : undefined })}`, input) as Promise<DsarExecutorCreated>,
       updateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}`, patch) as Promise<DsarExecutor>,
       dryRunConnectExecutor: (input) => request('POST', '/dsar/executors?dryRun=1', input) as Promise<DsarExecutorDryRun>,
       executorPresets: () => get('/dsar/executors/presets') as Promise<ExecutorPresets>,
@@ -3392,6 +3437,9 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       },
       taskExport: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}/export`) as Promise<DsarTaskExport>,
       task: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}`) as Promise<DsarTask>,
+      approveTask: (requestId, taskId) => request('POST', `/dsar/${enc(requestId)}/tasks/${enc(taskId)}/approve`) as Promise<DsarTask>,
+      rejectTask: (requestId, taskId, o = {}) =>
+        request('POST', `/dsar/${enc(requestId)}/tasks/${enc(taskId)}/reject`, o.reason !== undefined ? { reason: o.reason } : {}) as Promise<DsarTask>,
       testExecutor: (id, input) => request('POST', `/dsar/executors/${enc(id)}/test`, input) as Promise<ExecutorTestResult>,
       recheckExecutor: (id) => request('POST', `/dsar/executors/${enc(id)}/recheck`) as Promise<ExecutorTestResult>,
       executorHealthHistory: (id, opts = {}) =>
@@ -3514,7 +3562,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       delete: async (id) => {
         await request('DELETE', `/webhooks/${enc(id)}`);
       },
-      rollSecret: (id) => request('POST', `/webhooks/${enc(id)}/roll`) as Promise<{ secret: string }>,
+      rollSecret: (id, opts) => request('POST', `/webhooks/${enc(id)}/roll`, opts?.secret ? { secret: opts.secret } : undefined) as Promise<{ secret?: string; rolled?: boolean }>,
       test: (id) => request('POST', `/webhooks/${enc(id)}/test`) as Promise<WebhookTestResult>,
       deadLetters: () => get('/webhooks/dead-letters') as Promise<{ deadLetters: WebhookDeadLetter[] }>,
       replayDeadLetter: (id) => request('POST', `/webhooks/dead-letters/${enc(id)}/replay`),

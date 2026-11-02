@@ -1,6 +1,6 @@
 {
   "name": "@cookiemunch/sdk",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Typed REST client for the Cookie Munch Developer API (/v1)",
   "license": "MIT",
   "type": "module",
@@ -17,6 +17,11 @@
       "types": "./dist/consent.d.ts",
       "import": "./dist/consent.js",
       "require": "./dist/consent.cjs"
+    },
+    "./rights": {
+      "types": "./dist/rights.d.ts",
+      "import": "./dist/rights.js",
+      "require": "./dist/rights.cjs"
     }
   },
   "files": [

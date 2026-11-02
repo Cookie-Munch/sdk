@@ -65,3 +65,21 @@ const ok = verifyWebhookSignature({
 ```
 
 Full recipe (Express, edge/WebCrypto, replay protection): [`docs/api/webhook-signing.md`](../../docs/api/webhook-signing.md).
+
+## Answering rights requests
+
+`createRightsHandlers(...)` from `@cookiemunch/sdk/rights` serves the
+[cm-standard-v2 executor contract](https://cookiemunch.net/docs/executor-contract-v2) as Fetch API
+handlers built from your callbacks. Cookie Munch then finds, exports and erases people in your product.
+
+```ts
+import { createRightsHandlers } from '@cookiemunch/sdk/rights';
+
+export const { GET, POST } = createRightsHandlers({
+  key: process.env.CM_EXECUTOR_KEY!,           // the secretKey you registered
+  idSecret: process.env.CM_REQUEST_ID_SECRET!,  // signs request ids; 32+ characters
+  lookup: ({ emails, identity }) => findUserId(emails, identity),
+  access: async (r) => ({ status: 'completed', result: await exportUser(r.subjectId) }),
+  erase: async (r) => { await deleteUser(r.subjectId); },
+});
+```
