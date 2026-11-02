@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.14.2 (2026-11-02)
+
+- Added: `planCookies` accepts `presets.custom` (the body of `presets.applyCustom`).
+
 ## 0.14.1 (2026-11-02)
 
 - Added: `orgToken` on the referalli preset params.
