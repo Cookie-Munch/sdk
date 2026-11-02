@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.13.1 (2026-11-02)
+
+- Added: `connectExecutor(…, { verify: 'defer' })` and on `upsertExecutor`; `state: 'awaiting_first_probe'` on `DsarExecutor`.
+
 ## 0.13.0 (2026-11-02)
 
 - Added: `fulfillment.upsertExecutor(input)`: `PUT /v1/dsar/executors`, create or update the connection for a system from the create body.

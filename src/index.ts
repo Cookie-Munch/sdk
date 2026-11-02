@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.13.0';
+export const SDK_VERSION = '0.13.1';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -1975,6 +1975,8 @@ export interface DsarExecutor {
   completionsUrl?: string;
   /** True: its erasures wait (status `awaiting_approval`) for `approveTask` or `rejectTask`. */
   requireApproval?: boolean;
+  /** Made with `verify: 'defer'` and no probe has passed yet: not planned into requests, not alerted on. Absent: active. */
+  state?: 'awaiting_first_probe';
   /** On create only: the completion secret, shown this once. */
   completionSecret?: string;
 }
@@ -2793,9 +2795,10 @@ export interface CookieMunchClient {
       input: (DsarExecutorInput | DsarExecutorPresetInput) & ResourceTagsInput,
       /**
        * `verify: true` probes it first (a canary locate; no erasure is sent) and refuses a failing one
-       * (422 `verify_failed`, nothing stored); `'warn'` stores it with the verdict in `warnings`.
+       * (422 `verify_failed`, nothing stored); `'warn'` stores it with the verdict in `warnings`. `'defer'` (its API
+       * is not deployed yet) probes nothing and stores it as `state: 'awaiting_first_probe'` until a probe passes.
        */
-      opts?: { verify?: true | 'warn' },
+      opts?: { verify?: true | 'warn' | 'defer' },
     ): Promise<DsarExecutorCreated>;
     /**
      * Change a connection in place. Only what you send changes, and the stored credential
@@ -2808,7 +2811,7 @@ export interface CookieMunchClient {
      * Re-running it changes nothing; a changed create-only field (system, preset, presetVersion, preset params,
      * mintFrom, externalId) is `409 immutable_field` with every such field in `fields`.
      */
-    upsertExecutor(input: DsarExecutorInput | DsarExecutorPresetInput | Record<string, unknown>): Promise<DsarExecutor & { upserted: 'created' | 'updated' }>;
+    upsertExecutor(input: DsarExecutorInput | DsarExecutorPresetInput | Record<string, unknown>, opts?: { verify?: true | 'warn' | 'defer' }): Promise<DsarExecutor & { upserted: 'created' | 'updated' }>;
     /** What `connectExecutor` would create, validated in full; nothing is stored (`?dryRun=1`). */
     dryRunConnectExecutor(input: DsarExecutorInput | DsarExecutorPresetInput): Promise<DsarExecutorDryRun>;
     /** The versioned presets, whether each is usable now (or waits on another platform), and the org canary address. */
@@ -3525,9 +3528,9 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       executors: (o) => get(`/dsar/executors${metaQs(o)}`) as Promise<DsarExecutor[]>,
       executor: (id) => get(`/dsar/executors/${enc(id)}`) as Promise<DsarExecutor>,
       connectExecutor: (input, o) =>
-        request('POST', `/dsar/executors${qs({ verify: o?.verify ? (o.verify === 'warn' ? 'warn' : '1') : undefined })}`, input) as Promise<DsarExecutorCreated>,
+        request('POST', `/dsar/executors${qs({ verify: o?.verify === true ? '1' : o?.verify })}`, input) as Promise<DsarExecutorCreated>,
       updateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}`, patch) as Promise<DsarExecutor>,
-      upsertExecutor: (input) => request('PUT', '/dsar/executors', input) as Promise<DsarExecutor & { upserted: 'created' | 'updated' }>,
+      upsertExecutor: (input, o) => request('PUT', `/dsar/executors${qs({ verify: o?.verify === true ? '1' : o?.verify })}`, input) as Promise<DsarExecutor & { upserted: 'created' | 'updated' }>,
       dryRunConnectExecutor: (input) => request('POST', '/dsar/executors?dryRun=1', input) as Promise<DsarExecutorDryRun>,
       executorPresets: () => get('/dsar/executors/presets') as Promise<ExecutorPresets>,
       upgradeExecutorPreset: (id, input = {}) =>
