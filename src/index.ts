@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.12.0';
+export const SDK_VERSION = '0.12.1';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -662,7 +662,13 @@ export interface PutConfigOptions {
 export interface DsarCreateDryRun {
   dryRun: true;
   /** The connections auto-planning would open a task on once the request is verified. */
-  plan: Array<{ id: string; system: string; preset?: string; op: 'export' | 'erase' | 'optOut'; reached: true; requireApproval?: true }>;
+  plan: Array<{
+    id: string; system: string; preset?: string; op: 'export' | 'erase' | 'optOut'; reached: true; requireApproval?: true;
+    /** What this system would do: the host, the request templates in order (no person's data), one sentence. */
+    host?: string;
+    steps?: Array<{ step: string; method: string; path: string; operation?: string; purpose: string }>;
+    effect?: string;
+  }>;
   skipped: Array<{ system: string; reason: string }>;
   status: 'received';
   verificationRequired: true;

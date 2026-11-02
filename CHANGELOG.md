@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.12.1 (2026-11-02)
+
+- Added: `host`, `steps` and `effect` on each `DsarCreateDryRun.plan` entry: what that system would do.
+
 ## 0.12.0 (2026-11-02)
 
 - Added: `dsar.create(input, { dryRun: true })` answers the plan (`DsarCreateDryRun`) and files nothing; `lastSeenAt` on `Site`.
