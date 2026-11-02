@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.14.0 (2026-11-02)
+
+- Added: `sites.planCookies(cbid, { cookies, replace, presets })`: the combined dry run of a declarations write and presets, in order.
+- Added: `programHandle` on the referalli preset params.
+
 ## 0.13.2 (2026-11-02)
 
 - Added: `dsar.create(input, { dryRun: true, preview: true })` and `plan[].preview` (record types and counts per system).

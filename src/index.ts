@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.13.2';
+export const SDK_VERSION = '0.14.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -396,7 +396,7 @@ export interface CookieSuggestionsDeclared {
   diff?: DeclarationDiff;
 }
 
-/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`/`publishableKey`; Chatly `publicId`/`dragging`/`storage`/`tracking`/`category`; referral and affiliate presets (referalli, firstpromoter, partnerstack, tapfiliate, impact) `cookieDomain`/`cookieDays`/`category`, referalli `legacyName`, impact `campaignId`. */
+/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`/`publishableKey`; Chatly `publicId`/`dragging`/`storage`/`tracking`/`category`; referral and affiliate presets (referalli, firstpromoter, partnerstack, tapfiliate, impact) `cookieDomain`/`cookieDays`/`category`, referalli `legacyName`/`programHandle`, impact `campaignId`. */
 export interface CookiePresetParams {
   frontendApiHost?: string;
   crossSubdomainCookies?: boolean;
@@ -413,6 +413,8 @@ export interface CookiePresetParams {
   cookieDays?: number;
   /** referalli: default true, also declare referally_ctx (the pre-rename copy aff.js still writes). */
   legacyName?: boolean;
+  /** referalli: your program handle(s), up to 10; without cookieDays the lifetime is the programs' public cookieWindowDays. */
+  programHandle?: string | string[];
   /** impact: your program id; declares IR_<campaignId> too. */
   campaignId?: string;
 }
@@ -508,6 +510,24 @@ export interface DeclarationDiff {
   added: DeclaredCookie[];
   removed: DeclaredCookie[];
   changed: Array<{ name: string; before: DeclaredCookie; after: DeclaredCookie }>;
+}
+
+/** POST /v1/sites/:cbid/cookies/plan — the declarations PUT, then each preset in key order. */
+export interface CookiePlanInput {
+  cookies?: Array<DeclaredCookieInput & { name: string }>;
+  replace?: boolean;
+  /** Vendor → its params, applied in key order, each seeing the steps before it. */
+  presets?: Partial<Record<CookiePresetVendor, CookiePresetParams>>;
+}
+
+/** What the steps, in order, would produce. Nothing was stored. */
+export interface CookiePlanResult {
+  dryRun: true;
+  /** Each step's own dry-run answer, plus `step` (`cookies` or `presets.<vendor>`) and its diff against the step before. */
+  steps: Array<{ step: string; diff: DeclarationDiff; [k: string]: unknown }>;
+  declared: DeclaredCookie[];
+  count: number;
+  diff: DeclarationDiff;
 }
 
 /** The answer to a `dryRun` declaration write: nothing was stored. */
@@ -2524,6 +2544,11 @@ export interface CookieMunchClient {
       cookies: Array<DeclaredCookieInput & { name: string }>,
       opts?: { replace?: boolean; dryRun?: boolean },
     ): Promise<{ declared: DeclaredCookie[]; saved: number; removed: number; warnings?: DeclarationWarning[]; dryRun?: true; diff?: DeclarationDiff }>;
+    /**
+     * Plan a provisioning run, storing nothing: the declarations PUT (`cookies`, `replace`), then each
+     * preset in `presets` in key order, against one scratch copy — exactly what the real calls in that order produce.
+     */
+    planCookies(cbid: string, input: CookiePlanInput): Promise<CookiePlanResult>;
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
     /**
      * Mint a short-lived signed token to see the banner as a visitor in a given region and
@@ -3350,6 +3375,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
           dryRun?: true;
           diff?: DeclarationDiff;
         }>,
+      planCookies: (cbid, input) => request('POST', `/sites/${enc(cbid)}/cookies/plan`, input) as Promise<CookiePlanResult>,
       snippet: (cbid, opts) =>
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
       previewToken: (cbid, o) => request('POST', `/sites/${enc(cbid)}/preview-token`, o ?? {}) as Promise<PreviewToken>,
