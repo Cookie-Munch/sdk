@@ -61,7 +61,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.10.0';
+export const SDK_VERSION = '0.11.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -987,6 +987,11 @@ export interface ApiKeyPrefix {
   /** The dated API version this key is pinned to. */
   apiVersion?: string;
 }
+
+/** A signed audit-anchor receipt (POST /v1/anchors). Verify `signature` (Ed25519, base64url) over the canonical JSON of every other field with the key `keyId` in /v1/partner/jwks.json. */
+export interface AnchorReceipt { id: string; org: string; stream: string; head: string; seq: number; receivedAt: string; keyId: string; alg: 'EdDSA'; signature: string }
+/** GET /v1/anchors/{stream}: newest first; pass `nextBefore` as `before` until it is null. */
+export interface AnchorList { stream: string; anchors: AnchorReceipt[]; nextBefore: number | null }
 
 /** A live organisation's sandbox (GET /v1/sandbox). */
 export interface SandboxOrg { orgId: string; name: string; sandboxOf: string; createdAt: string }
@@ -1946,6 +1951,8 @@ export interface ExecutorHealth {
   code?: string;
   /** When a check last passed. */
   lastSuccessAt?: number;
+  /** The `X-Version` the system last answered with. */
+  version?: string;
   /** On reads: true when the last check is more than an hour old, with the command that re-checks it in `hint`. */
   stale?: boolean;
   hint?: string;
@@ -2434,7 +2441,7 @@ export interface CookieMunchClient {
     /** What removing a declaration would leave; nothing is removed. */
     undeclareCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<DeclarationDryRun>;
     /**
-     * Declare many at once (all-or-nothing). `replace` also removes declarations not listed;
+     * Declare many at once (all-or-nothing). `replace` also removes your own declarations not listed (vendor-preset rows stay);
      * `dryRun` answers with what would be stored and a diff, storing nothing.
      */
     declareCookies(
@@ -2500,7 +2507,8 @@ export interface CookieMunchClient {
      * wrapped as `{ request }`, so `create(...).request.id` is what you pass here.
      */
     get(id: string): Promise<DsarRequest>;
-    create(input: DsarCreate & ResourceTagsInput): Promise<{ request: DsarRequest }>;
+    /** `skipped`: connections scoped to another property (or to one, when the request names none), never planned for it. */
+    create(input: DsarCreate & ResourceTagsInput): Promise<{ request: DsarRequest; consent?: { count: number; sites: string[] }; skipped?: Array<{ system: string; reason: string }> }>;
     /** `opts.messageToSubject` replaces the line the subject reads in the notice — for a rejection, why. */
     advance(id: string, toStatus: DsarStatus, opts?: { messageToSubject?: string }): Promise<{ request: DsarRequest }>;
     /** The subject-facing response notice for a request, as plain text. */
@@ -2826,6 +2834,19 @@ export interface CookieMunchClient {
   versions(): Promise<ApiVersions>;
   /** What the org may use: every plan feature (`whiteLabel`, `tcf`, …) and limit, in the suite-standard shape. Any key may read it. */
   entitlements(): Promise<Entitlements>;
+  /**
+   * Audit anchoring: post the head of your own hash-chained log and get a receipt signed by Cookie Munch's
+   * platform key. `seq` must strictly increase per stream; the same seq and head again returns the original
+   * receipt, a different head for an anchored seq is a 409 (`anchor_head_mismatch`). Needs `anchors:write` / `anchors:read`.
+   */
+  anchors: {
+    /** Anchor `head` at `seq` on `stream` (POST /v1/anchors). */
+    create(input: { stream: string; head: string; seq: number }): Promise<AnchorReceipt>;
+    /** A stream's receipts, newest first (GET /v1/anchors/{stream}). */
+    list(stream: string, query?: { limit?: number; before?: number }): Promise<AnchorList>;
+    /** One receipt (GET /v1/anchors/{stream}/{id}). */
+    get(stream: string, id: string): Promise<AnchorReceipt>;
+  };
   /**
    * The organisation's sandbox: a separate test organisation with the same people and plan features, never billed.
    * Its keys are test-format keys and its rights requests are all tests. `create` and `delete` need an unscoped key or `orgs:create`.
@@ -3286,7 +3307,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     dsar: {
       list: () => get('/dsar') as Promise<DsarRequest[]>,
       get: (id) => get(`/dsar/${enc(id)}`) as Promise<DsarRequest>,
-      create: (input) => request('POST', '/dsar', input) as Promise<{ request: DsarRequest }>,
+      create: (input) => request('POST', '/dsar', input) as Promise<{ request: DsarRequest; consent?: { count: number; sites: string[] }; skipped?: Array<{ system: string; reason: string }> }>,
       advance: (id, toStatus, opts) =>
         request('POST', `/dsar/${enc(id)}/advance`, { toStatus, ...(opts?.messageToSubject !== undefined ? { messageToSubject: opts.messageToSubject } : {}) }) as Promise<{ request: DsarRequest }>,
       response: (id) => request('GET', `/dsar/${enc(id)}/response`, undefined, true) as Promise<string>,
@@ -3482,6 +3503,11 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     usage: () => get('/usage') as Promise<Usage>,
     entitlements: () => get('/entitlements') as Promise<Entitlements>,
     versions: () => get('/versions') as Promise<ApiVersions>,
+    anchors: {
+      create: (input) => request('POST', '/anchors', input) as Promise<AnchorReceipt>,
+      list: (stream, query) => get(`/anchors/${enc(stream)}${qs(query)}`) as Promise<AnchorList>,
+      get: (stream, id) => get(`/anchors/${enc(stream)}/${enc(id)}`) as Promise<AnchorReceipt>,
+    },
     sandbox: {
       get: async () => ((await get('/sandbox')) as { sandbox: SandboxOrg | null }).sandbox,
       create: (input) => request('POST', '/sandbox', input ?? {}) as Promise<SandboxCreated>,

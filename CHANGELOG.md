@@ -2,6 +2,12 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.11.0 (2026-11-02)
+
+- Added: `anchors.create` / `list` / `get`: signed, timestamped receipts for the head of your own hash-chained log (`POST /v1/anchors`).
+- Added: `health.version` (the system's last `X-Version`) on executor connections; `skipped` on a created request.
+- Changed: `cookies.declare` with `replace: true` leaves vendor-preset rows alone.
+
 ## 0.10.0 (2026-11-01)
 
 - Added: `fulfillment.approveTask` / `rejectTask` for an erasure parked by `requireApproval`; `requireApproval` on connections; `verify: 1 | 'warn'` on `connectExecutor`; `listByOrigin` (`origin: "account_deletion"`).
