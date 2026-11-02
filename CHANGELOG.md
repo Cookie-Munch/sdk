@@ -2,6 +2,12 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.12.0 (2026-11-02)
+
+- Added: `dsar.create(input, { dryRun: true })` answers the plan (`DsarCreateDryRun`) and files nothing; `lastSeenAt` on `Site`.
+- Added: `sites.translation` / `connectTranslation` / `disconnectTranslation` / `translateCookies`: machine-translate the missing purposes of your own cookie rows on your own DeepL or Google account; `machinePurposes` on a declaration.
+- Added: processor routing types: `DsarSettings.processing` and `acceptForwardsFrom` (`dsarSettings.set` takes `DsarSettingsInput`), `controller` on `DsarCreate`/`DsarCaseCreate`, `processor` and `forwardedFrom` on cases, origin `processor_forward`.
+
 ## 0.11.0 (2026-11-02)
 
 - Added: `anchors.create` / `list` / `get`: signed, timestamped receipts for the head of your own hash-chained log (`POST /v1/anchors`).

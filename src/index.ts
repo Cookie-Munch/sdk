@@ -42,6 +42,7 @@ import type {
   DsarCaseCreate,
   DsarCaseReceipt,
   DsarSettings,
+  DsarSettingsInput,
   SubjectCard,
   IntegrationConnect,
   IntegrationConnectResult,
@@ -61,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.11.0';
+export const SDK_VERSION = '0.12.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -292,6 +293,38 @@ export interface DeclaredCookie extends DeclaredCookieInput {
   source?: 'import';
   /** The vendor whose preset declared it. */
   vendor?: string;
+  /** The `purposes` languages that are machine translations (sites.translateCookies); absent = all human-written. */
+  machinePurposes?: string[];
+}
+
+/** GET/PUT/DELETE /v1/sites/:cbid/translation — the site's own translation account. Never the key. */
+export interface TranslationConnection {
+  cbid: string;
+  connected: boolean;
+  provider: 'deepl' | 'google' | null;
+  keyLast4: string | null;
+  /** First 12 hex of SHA-256(key). */
+  keyFingerprint: string | null;
+  connectedAt: number | null;
+  /** On connect only: whether the key was checked with the provider first. */
+  verified?: boolean;
+}
+
+/** POST /v1/sites/:cbid/cookies/translate */
+export interface CookieTranslateResult {
+  dryRun: boolean;
+  provider: 'deepl' | 'google' | null;
+  languages: string[];
+  /** Languages the provider cannot translate into. Reported, not a failure. */
+  unsupported: Array<{ language: string; reason: string }>;
+  /** Languages whose provider call failed; nothing was stored for them. */
+  failed: Array<{ language: string; error: string }>;
+  characters: number;
+  translated: number;
+  rows: number;
+  /** `text` is absent on a dry run. */
+  changes: Array<{ name: string; language: string; source: string; text?: string }>;
+  skipped: Array<{ name: string; language: string; reason: string }>;
 }
 
 /** A platform whose cookies and storage a preset declares. */
@@ -623,6 +656,20 @@ export interface ConfigChange {
 /** `PUT …/config` options. `keep: 'unspecified'` keeps the stored value of every top-level field the body omits. */
 export interface PutConfigOptions {
   keep?: 'unspecified';
+}
+
+/** What `POST /v1/dsar?dryRun=1` would do: nothing was filed, and no connected system was contacted. */
+export interface DsarCreateDryRun {
+  dryRun: true;
+  /** The connections auto-planning would open a task on once the request is verified. */
+  plan: Array<{ id: string; system: string; preset?: string; op: 'export' | 'erase' | 'optOut'; reached: true; requireApproval?: true }>;
+  skipped: Array<{ system: string; reason: string }>;
+  status: 'received';
+  verificationRequired: true;
+  /** The deadline it would get (epoch ms). */
+  dueAt: number;
+  /** On a processor site: the controller it would be forwarded to (`plan` and `skipped` are then empty). */
+  forwardTo?: { controllerId: string; name: string; kind: 'cookiemunch' | 'webhook' | 'refer' };
 }
 
 /** What a config write would do (`?dryRun=1`) — nothing is saved. */
@@ -2425,6 +2472,20 @@ export interface CookieMunchClient {
     cookieSuggestions(cbid: string): Promise<CookieSuggestions>;
     /** Declare the suggestions: detected vendors' presets, then every other suggestion with a purpose. Try `dryRun` first. */
     declareCookieSuggestions(cbid: string, input?: { names?: string[]; presets?: boolean }, opts?: { dryRun?: boolean }): Promise<CookieSuggestionsDeclared>;
+    /** The site's own translation account (DeepL or Google) for translateCookies. Never the key. */
+    translation(cbid: string): Promise<TranslationConnection>;
+    /**
+     * Connect the site's own DeepL or Google Cloud Translation key (stored sealed, never returned).
+     * `verify` checks it with the provider first, sending no text.
+     */
+    connectTranslation(cbid: string, input: { provider: 'deepl' | 'google'; key: string }, opts?: { verify?: boolean }): Promise<TranslationConnection>;
+    /** Disconnect it; translations already stored stay. */
+    disconnectTranslation(cbid: string): Promise<TranslationConnection>;
+    /**
+     * Machine-translate the missing `purposes` of the site's own declarations on its connected
+     * account. Never overwrites text a row has. `dryRun` lists the changes and calls no provider.
+     */
+    translateCookies(cbid: string, input?: { languages?: string[]; names?: string[] }, opts?: { dryRun?: boolean }): Promise<CookieTranslateResult>;
     /** Remove every declaration a vendor preset made. */
     removeCookiePreset(cbid: string, vendor: CookiePresetVendor | (string & {}), opts?: { dryRun?: boolean }): Promise<{ vendor: string; removed: string[]; dryRun?: true; declared?: DeclaredCookie[]; diff?: DeclarationDiff }>;
     /** Remove every stored (scanned or observed) row of this name. A declaration of it stays. */
@@ -2507,8 +2568,13 @@ export interface CookieMunchClient {
      * wrapped as `{ request }`, so `create(...).request.id` is what you pass here.
      */
     get(id: string): Promise<DsarRequest>;
-    /** `skipped`: connections scoped to another property (or to one, when the request names none), never planned for it. */
-    create(input: DsarCreate & ResourceTagsInput): Promise<{ request: DsarRequest; consent?: { count: number; sites: string[] }; skipped?: Array<{ system: string; reason: string }> }>;
+    /**
+     * `skipped`: connections scoped to another property (or to one, when the request names none), never planned for it.
+     * `{ dryRun: true }` files nothing and contacts no connected system: it answers which connections the request would
+     * reach once verified (`plan`) and which it would skip.
+     */
+    create(input: DsarCreate & ResourceTagsInput, opts: { dryRun: true }): Promise<DsarCreateDryRun>;
+    create(input: DsarCreate & ResourceTagsInput, opts?: { dryRun?: false }): Promise<{ request: DsarRequest; consent?: { count: number; sites: string[] }; skipped?: Array<{ system: string; reason: string }> }>;
     /** `opts.messageToSubject` replaces the line the subject reads in the notice — for a rejection, why. */
     advance(id: string, toStatus: DsarStatus, opts?: { messageToSubject?: string }): Promise<{ request: DsarRequest }>;
     /** The subject-facing response notice for a request, as plain text. */
@@ -2537,7 +2603,7 @@ export interface CookieMunchClient {
     /** Requests carrying one X-Trace-Id (`GET /v1/dsar?trace=`). */
     listByTrace(trace: string): Promise<DsarRequest[]>;
     /** Requests with one origin (`GET /v1/dsar?origin=`): `account_deletion`, those a person's own account deletion opened. */
-    listByOrigin(origin: 'account_deletion'): Promise<DsarRequest[]>;
+    listByOrigin(origin: 'account_deletion' | 'processor_forward'): Promise<DsarRequest[]>;
     /**
      * Open a case fanned out to every connected system (POST /v1/dsar/requests). `opts.idempotencyKey`
      * (16–128 chars) makes a retry answer the same case; `opts.trace` passes your X-Trace-Id on.
@@ -3018,7 +3084,7 @@ export interface CookieMunchClient {
   /** A site's rights-request settings: graceDays (0–30; 7 for a new site, 0 until set for one that existed before). Requires dsar:read / dsar:write. */
   dsarSettings: {
     get(cbid: string): Promise<DsarSettings>;
-    set(cbid: string, input: { graceDays: number }): Promise<DsarSettings>;
+    set(cbid: string, input: DsarSettingsInput): Promise<DsarSettings>;
   };
   /** Cards for support, CRM and helpdesk sidebars (dsar:read), and one-call identity-provider connect (dsar:write). */
   integrations: {
@@ -3229,6 +3295,12 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       cookieSuggestions: (cbid) => get(`/sites/${enc(cbid)}/cookies/suggestions`) as Promise<CookieSuggestions>,
       declareCookieSuggestions: (cbid, input, o) =>
         request('POST', `/sites/${enc(cbid)}/cookies/suggestions/declare${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input ?? {}) as Promise<CookieSuggestionsDeclared>,
+      translation: (cbid) => get(`/sites/${enc(cbid)}/translation`) as Promise<TranslationConnection>,
+      connectTranslation: (cbid, input, o) =>
+        request('PUT', `/sites/${enc(cbid)}/translation${qs({ verify: o?.verify ? '1' : undefined })}`, input) as Promise<TranslationConnection>,
+      disconnectTranslation: (cbid) => request('DELETE', `/sites/${enc(cbid)}/translation`) as Promise<TranslationConnection>,
+      translateCookies: (cbid, input, o) =>
+        request('POST', `/sites/${enc(cbid)}/cookies/translate${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input ?? {}) as Promise<CookieTranslateResult>,
       removeCookiePreset: (cbid, vendor, o) =>
         request('DELETE', `/sites/${enc(cbid)}/cookies/presets/${enc(vendor)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`) as Promise<{
           vendor: CookiePresetVendor;
@@ -3307,7 +3379,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     dsar: {
       list: () => get('/dsar') as Promise<DsarRequest[]>,
       get: (id) => get(`/dsar/${enc(id)}`) as Promise<DsarRequest>,
-      create: (input) => request('POST', '/dsar', input) as Promise<{ request: DsarRequest; consent?: { count: number; sites: string[] }; skipped?: Array<{ system: string; reason: string }> }>,
+      create: ((input: DsarCreate & ResourceTagsInput, o?: { dryRun?: boolean }) => request('POST', `/dsar${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input)) as CookieMunchClient['dsar']['create'],
       advance: (id, toStatus, opts) =>
         request('POST', `/dsar/${enc(id)}/advance`, { toStatus, ...(opts?.messageToSubject !== undefined ? { messageToSubject: opts.messageToSubject } : {}) }) as Promise<{ request: DsarRequest }>,
       response: (id) => request('GET', `/dsar/${enc(id)}/response`, undefined, true) as Promise<string>,

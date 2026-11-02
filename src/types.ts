@@ -65,6 +65,8 @@ export interface Site {
   /** Other hosts serving the site: accepted consent-ingest origins, never verified claims. */
   aliases?: string[];
   verified?: boolean;
+  /** Epoch ms of the last embed beacon from the domain or an alias, accurate to the hour. null/absent: none yet. */
+  lastSeenAt?: number | null;
 }
 
 /** PATCH /v1/sites/{cbid} — rename or move a site. `name: null` clears the name; `aliases: []` clears them. */
@@ -284,6 +286,36 @@ export interface DsarRequest {
   canonicalType?: string;
   /** The case's X-Trace-Id, when it has one. */
   trace?: string;
+  /** Filed at a processor site: the controller it goes to and how the forward went. */
+  processor?: DsarProcessorForward;
+}
+
+/** A processor site's request on its way to the controller (dsar-settings `processing`). */
+export interface DsarProcessorForward {
+  controllerId: string;
+  controllerName: string;
+  attempts: number;
+  lastAttemptAt?: number;
+  /** Why the last forward failed; the request stays in_progress and is retried. */
+  lastError?: string;
+  /** The retries are spent: a person must act. The request is still open. */
+  needsPerson?: boolean;
+  outcome?: 'processor_forwarded' | 'processor_referred';
+  forwardedTo?: { controllerId: string; name: string; kind: 'cookiemunch' | 'webhook' | 'refer'; at: number; caseId?: string; contactUrl?: string; contactEmail?: string };
+}
+
+/** A business a processor site handles data for, and how its requests reach it. */
+export interface ProcessorController {
+  id: string;
+  name: string;
+  contactUrl?: string;
+  contactEmail?: string;
+  /** cookiemunch: open a case on that site (it must list you in acceptForwardsFrom). webhook: POST dsar.forwarded, signed. refer: send nothing. */
+  forward:
+    | { kind: 'cookiemunch'; cbid: string }
+    /** `secret` is write-only; it reads back as `hasSecret`. */
+    | { kind: 'webhook'; url: string; secret?: string; hasSecret?: boolean }
+    | { kind: 'refer' };
 }
 
 /** A signed-in identity from any OIDC issuer the site trusts. `(iss, sub)` is the key. */
@@ -311,7 +343,7 @@ export interface DsarCaseCreate {
   /** product and atlas need dsar:write and attest the person; admin (default) files it received. */
   /** `identity`: the site's sign-in provider. `atlas` is its former name. */
   source?: 'product' | 'identity' | 'admin' | 'atlas';
-  /** The person deleted their own account. Default for a closure from product or identity. */
+  /** The person deleted their own account. Default for a closure from product or identity. (`processor_forward` is set by Cookie Munch only.) */
   origin?: 'account_deletion';
   reason?: string;
   /** Connections not to ask: system names, connection ids, or `self`. */
@@ -321,6 +353,8 @@ export interface DsarCaseCreate {
   regulation?: 'gdpr' | 'ccpa' | 'lgpd' | 'pipeda' | 'vcdpa';
   jurisdiction?: string;
   test?: boolean;
+  /** On a processor site: the id of the controller this concerns. Optional when the site lists one. */
+  controller?: string;
 }
 
 export type DsarCaseStatus = 'pending' | 'scheduled' | 'processing' | 'completed' | 'completed_with_retention' | 'rejected' | 'cancelled';
@@ -358,8 +392,8 @@ export interface DsarCase {
   requestStatus: DsarStatus;
   cbid?: string;
   source: 'product' | 'identity' | 'rights_page' | 'admin' | 'atlas' | null;
-  /** account_deletion: the person deleted their own account. */
-  origin: 'account_deletion' | null;
+  /** account_deletion: the person deleted their own account. processor_forward: a processor passed it on to you (see forwardedFrom). */
+  origin: 'account_deletion' | 'processor_forward' | null;
   reason: string | null;
   openedAt: string;
   /** Nothing is erased anywhere before this. */
@@ -376,6 +410,10 @@ export interface DsarCase {
   fulfill: boolean | null;
   cancelRequestedAt: string | null;
   test: boolean;
+  /** Filed at a processor site: the controller it goes to and how the forward went. */
+  processor: DsarProcessorForward | null;
+  /** origin processor_forward: the processor that passed it on. */
+  forwardedFrom: { orgId: string; name: string; cbid: string; caseId: string } | null;
   tasks: DsarCaseTask[];
   receiptUrl: string;
   /** Lets the person who asked read this case through POST /api/v1/public/dsar/status. */
@@ -408,6 +446,17 @@ export interface DsarSettings {
   /** site: set explicitly; default: a new site's 7 days; legacy: an existing site, 0 until set. */
   source: 'site' | 'default' | 'legacy';
   updatedAt: number | null;
+  /** Set when this site is a processor: its requests go to the controller they concern, not your connected systems. */
+  processing: { role: 'processor'; controllers: ProcessorController[] } | null;
+  /** On a controller's site: the processors (org ids or cbids) that may open cases here. */
+  acceptForwardsFrom: string[];
+}
+
+/** PUT /v1/sites/{cbid}/dsar-settings: only the fields sent change; null clears. */
+export interface DsarSettingsInput {
+  graceDays?: number;
+  processing?: { role: 'processor'; controllers: ProcessorController[] } | null;
+  acceptForwardsFrom?: string[] | null;
 }
 
 /** GET /v1/integrations/{app}/card. */
@@ -497,6 +546,8 @@ export interface DsarCreate {
    * and deletable with `dsar.delete(id)`. For end-to-end checks of a rights flow.
    */
   test?: boolean;
+  /** On a processor site: the id of the controller this concerns. Optional when the site lists one. */
+  controller?: string;
 }
 
 export interface VendorInput {
