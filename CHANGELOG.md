@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.13.0 (2026-11-02)
+
+- Added: `fulfillment.upsertExecutor(input)`: `PUT /v1/dsar/executors`, create or update the connection for a system from the create body.
+- Changed: `updateExecutor` accepts the create-time fields; unchanged ones are no-ops, a changed one is `409 immutable_field` with `fields`.
+
 ## 0.12.1 (2026-11-02)
 
 - Added: `host`, `steps` and `effect` on each `DsarCreateDryRun.plan` entry: what that system would do.

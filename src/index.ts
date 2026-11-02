@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.12.1';
+export const SDK_VERSION = '0.13.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -2803,6 +2803,12 @@ export interface CookieMunchClient {
      * cost you the connection or its id.
      */
     updateExecutor(id: string, patch: DsarExecutorPatch): Promise<DsarExecutor>;
+    /**
+     * Create or update the connection for a system from the same body as `connectExecutor` (`PUT /v1/dsar/executors`).
+     * Re-running it changes nothing; a changed create-only field (system, preset, presetVersion, preset params,
+     * mintFrom, externalId) is `409 immutable_field` with every such field in `fields`.
+     */
+    upsertExecutor(input: DsarExecutorInput | DsarExecutorPresetInput | Record<string, unknown>): Promise<DsarExecutor & { upserted: 'created' | 'updated' }>;
     /** What `connectExecutor` would create, validated in full; nothing is stored (`?dryRun=1`). */
     dryRunConnectExecutor(input: DsarExecutorInput | DsarExecutorPresetInput): Promise<DsarExecutorDryRun>;
     /** The versioned presets, whether each is usable now (or waits on another platform), and the org canary address. */
@@ -3521,6 +3527,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       connectExecutor: (input, o) =>
         request('POST', `/dsar/executors${qs({ verify: o?.verify ? (o.verify === 'warn' ? 'warn' : '1') : undefined })}`, input) as Promise<DsarExecutorCreated>,
       updateExecutor: (id, patch) => request('PATCH', `/dsar/executors/${enc(id)}`, patch) as Promise<DsarExecutor>,
+      upsertExecutor: (input) => request('PUT', '/dsar/executors', input) as Promise<DsarExecutor & { upserted: 'created' | 'updated' }>,
       dryRunConnectExecutor: (input) => request('POST', '/dsar/executors?dryRun=1', input) as Promise<DsarExecutorDryRun>,
       executorPresets: () => get('/dsar/executors/presets') as Promise<ExecutorPresets>,
       upgradeExecutorPreset: (id, input = {}) =>
