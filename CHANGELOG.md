@@ -2,6 +2,12 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.13.2 (2026-11-02)
+
+- Added: `dsar.create(input, { dryRun: true, preview: true })` and `plan[].preview` (record types and counts per system).
+- Added: `parentPrefix` on `ApiKeyPrefix` and `ApiKeyIssued` (bound child keys minted by a scoped key).
+- Changed: `SiteUpdateResult` carries the site's own fields at the top, `aliases` always an array.
+
 ## 0.13.1 (2026-11-02)
 
 - Added: `connectExecutor(…, { verify: 'defer' })` and on `upsertExecutor`; `state: 'awaiting_first_probe'` on `DsarExecutor`.

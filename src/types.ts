@@ -78,7 +78,9 @@ export interface SiteUpdate {
   keepOldDomain?: boolean;
 }
 
-export interface SiteUpdateResult {
+/** The site's own fields at the top (as `sites.get` returns them, `aliases` always an array), plus `site`, `diff` and `effects`. */
+export interface SiteUpdateResult extends Site {
+  aliases: string[];
   dryRun?: true;
   site: Site;
   diff: Array<{ field: 'domain' | 'name' | 'aliases' | 'verified'; before: unknown; after: unknown }>;

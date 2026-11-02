@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.13.1';
+export const SDK_VERSION = '0.13.2';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -668,6 +668,8 @@ export interface DsarCreateDryRun {
     host?: string;
     steps?: Array<{ step: string; method: string; path: string; operation?: string; purpose: string }>;
     effect?: string;
+    /** `{ preview: true }` only: what the system's `profile.preview` reported for the subject (reads only). */
+    preview?: { ok: true; records: Array<{ type: string; count: number }>; raw?: string } | { ok: false; reason: string };
   }>;
   skipped: Array<{ system: string; reason: string }>;
   status: 'received';
@@ -1039,6 +1041,8 @@ export interface ApiKeyPrefix {
   strictUnknownFields?: boolean;
   /** The dated API version this key is pinned to. */
   apiVersion?: string;
+  /** A bound child key's parent (the scoped key that minted it): it works only while that key does. null = independent. */
+  parentPrefix?: string | null;
 }
 
 /** A signed audit-anchor receipt (POST /v1/anchors). Verify `signature` (Ed25519, base64url) over the canonical JSON of every other field with the key `keyId` in /v1/partner/jwks.json. */
@@ -1098,6 +1102,8 @@ export interface ApiKeyIssued {
   expiresAt?: number | null;
   scopes?: string[] | null;
   cbids?: string[] | null;
+  /** Minted by a scoped key: the key it is bound to (it stops working when that key is revoked, rolled or expires). null = independent. */
+  parentPrefix?: string | null;
   /** No expiry, or one over 365 days. */
   warnings?: string[];
   /** With `secretRecipient`: the key, sealed (and `key` absent). */
@@ -2579,9 +2585,10 @@ export interface CookieMunchClient {
     /**
      * `skipped`: connections scoped to another property (or to one, when the request names none), never planned for it.
      * `{ dryRun: true }` files nothing and contacts no connected system: it answers which connections the request would
-     * reach once verified (`plan`) and which it would skip.
+     * reach once verified (`plan`) and which it would skip. Add `preview: true` to also ask each planned system its
+     * lookup and `profile.preview` for the subject (reads only, nothing filed): `plan[].preview`.
      */
-    create(input: DsarCreate & ResourceTagsInput, opts: { dryRun: true }): Promise<DsarCreateDryRun>;
+    create(input: DsarCreate & ResourceTagsInput, opts: { dryRun: true; preview?: boolean }): Promise<DsarCreateDryRun>;
     create(input: DsarCreate & ResourceTagsInput, opts?: { dryRun?: false }): Promise<{ request: DsarRequest; consent?: { count: number; sites: string[] }; skipped?: Array<{ system: string; reason: string }> }>;
     /** `opts.messageToSubject` replaces the line the subject reads in the notice — for a rejection, why. */
     advance(id: string, toStatus: DsarStatus, opts?: { messageToSubject?: string }): Promise<{ request: DsarRequest }>;
@@ -3394,7 +3401,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     dsar: {
       list: () => get('/dsar') as Promise<DsarRequest[]>,
       get: (id) => get(`/dsar/${enc(id)}`) as Promise<DsarRequest>,
-      create: ((input: DsarCreate & ResourceTagsInput, o?: { dryRun?: boolean }) => request('POST', `/dsar${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input)) as CookieMunchClient['dsar']['create'],
+      create: ((input: DsarCreate & ResourceTagsInput, o?: { dryRun?: boolean; preview?: boolean }) => request('POST', `/dsar${qs({ dryRun: o?.dryRun ? '1' : undefined, preview: o?.preview ? '1' : undefined })}`, input)) as CookieMunchClient['dsar']['create'],
       advance: (id, toStatus, opts) =>
         request('POST', `/dsar/${enc(id)}/advance`, { toStatus, ...(opts?.messageToSubject !== undefined ? { messageToSubject: opts.messageToSubject } : {}) }) as Promise<{ request: DsarRequest }>,
       response: (id) => request('GET', `/dsar/${enc(id)}/response`, undefined, true) as Promise<string>,
