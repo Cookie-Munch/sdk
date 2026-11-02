@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.14.0';
+export const SDK_VERSION = '0.14.1';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -415,6 +415,8 @@ export interface CookiePresetParams {
   legacyName?: boolean;
   /** referalli: your program handle(s), up to 10; without cookieDays the lifetime is the programs' public cookieWindowDays. */
   programHandle?: string | string[];
+  /** referalli: the token in your aff.js tag; without cookieDays/programHandle the lifetime is the window that script is served with. */
+  orgToken?: string;
   /** impact: your program id; declares IR_<campaignId> too. */
   campaignId?: string;
 }

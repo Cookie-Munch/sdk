@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.14.1 (2026-11-02)
+
+- Added: `orgToken` on the referalli preset params.
+
 ## 0.14.0 (2026-11-02)
 
 - Added: `sites.planCookies(cbid, { cookies, replace, presets })`: the combined dry run of a declarations write and presets, in order.
