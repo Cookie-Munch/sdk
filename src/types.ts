@@ -165,7 +165,7 @@ export interface ProvisionRequest {
   cbid?: string;
   /** `frontendApiHost` (e.g. auth.example.com) lets provision declare Atlas's sign-in cookies on the site. */
   /** `rightsIdentity` (default true) makes Atlas the site's rights sign-in (step `rights.identity`). */
-  atlas?: { secretKey: string; cookieConsent?: boolean; dsrWebhook?: boolean; rightsIdentity?: boolean; frontendApiHost?: string };
+  atlas?: { secretKey: string; cookieConsent?: boolean; dsrWebhook?: boolean; rightsIdentity?: boolean; frontendApiHost?: string; connect?: boolean };
   forumulate?: { token: string; orgId: string; consent?: boolean; executorKey?: boolean; label?: string };
   rightsApi?: { baseUrl: string; secretKey: string; profilePreset?: string };
 }

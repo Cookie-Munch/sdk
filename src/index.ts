@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.15.0';
+export const SDK_VERSION = '0.15.1';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -140,7 +140,7 @@ export interface ProvisionRequestV2 {
   categories?: string[];
   rightsIdentity?: Record<string, unknown>;
   dsar?: { graceDays?: number };
-  atlas?: { instanceId?: string; secretKey?: string; cookieConsent?: boolean; executor?: boolean; frontendApiHost?: string };
+  atlas?: { instanceId?: string; secretKey?: string; cookieConsent?: boolean; executor?: boolean; frontendApiHost?: string; /** Atlas's one-call connect (step `atlas.connect`): the connection holds Atlas's narrow key, never `secretKey`. */ connect?: boolean };
   forumulate?: { org?: string; orgId?: string; token?: string; consent?: boolean; executor?: boolean; label?: string };
   chatly?: { workspace?: string; publicId?: string; vendorHook?: boolean; executor?: boolean };
   self?: { baseUrl: string; contract?: string; secret: string };
@@ -473,6 +473,8 @@ export interface CookiePreset {
   params: Array<{ name: string; type: string; required: boolean; description?: string }>;
   applied: boolean;
   declared: string[];
+  /** An applied preset: names the site was seen writing under the vendor's prefixes that nothing declares. */
+  incomplete?: string[];
   manifest: CookiePresetManifest;
 }
 
