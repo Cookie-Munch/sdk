@@ -472,13 +472,16 @@ export interface SubjectCard {
 export interface IntegrationConnect {
   /** The site the provider opens cases on. */
   cbid: string;
-  /** The provider instance's secret key, used for this one call; never stored or echoed. */
+  /** The provider instance's secret key (Forumulate: an org token, fck_…), used for this one call; never stored or echoed. */
   providerKey: string;
+  /** Forumulate only (required there): the Forumulate organisation whose consent follows the site. */
+  orgId?: string;
   /** Only for a provider with no built-in connector. A body value "{apiKey}" becomes the minted key. */
   connector?: { url: string; method?: 'PUT' | 'POST'; body: Record<string, unknown> };
   /**
-   * Atlas only: also create (or update) the `atlas` connection, holding the narrow key Atlas mints for it and
-   * the `whsec_` secret of the completion webhook Atlas points at its `webhookUrl`. Needs a key not locked to properties.
+   * Atlas: also create (or update) the `atlas` connection, holding the narrow key Atlas mints for it and
+   * the `whsec_` secret of the completion webhook Atlas points at its `webhookUrl`. Forumulate: also mint
+   * Forumulate's executor key into the `forumulate` connection. Needs a key not locked to properties.
    */
   executor?: boolean;
 }
@@ -488,17 +491,23 @@ export interface IntegrationConnectResult {
   dryRun?: true;
   provider: string;
   cbid: string;
-  /** The minted key's metadata; the key itself is never returned. */
-  key: { prefix?: string; name: string; owner: string; scopes: string[]; cbids: string[]; expiresAt?: number | null; expiresInDays?: number };
-  request: { method: 'PUT' | 'POST'; url: string; status?: number };
+  /** Forumulate: the Forumulate organisation. */
+  orgId?: string;
+  /** The minted key's metadata; the key itself is never returned. Not for Forumulate, which mints no key. */
+  key?: { prefix?: string; name: string; owner: string; scopes: string[]; cbids: string[]; expiresAt?: number | null; expiresInDays?: number };
+  request?: { method: 'PUT' | 'POST'; url: string; status?: number };
+  /** Forumulate: the provision steps run, as POST /v1/provision answers them. */
+  steps?: Array<{ step: string; status: string; detail?: string; waitingOn?: string }>;
+  summary?: Record<'changed' | 'unchanged' | 'waiting' | 'failed', number>;
+  trace?: string;
   /** Only on a dry run: the body that would be sent, the key shown as a placeholder. */
   requestBody?: Record<string, unknown>;
   /** Earlier keys for this provider and site, revoked now. */
   revoked?: string[];
   wouldRevoke?: string[];
-  /** With `executor: true`: the `atlas` connection (answer 207 when it could not be stored). */
+  /** With `executor: true`: the `atlas` (or `forumulate`) connection (answer 207 when it could not be stored). */
   executor?: {
-    status: 'created' | 'updated' | 'unchanged' | 'failed' | 'would_create' | 'would_update';
+    status: 'created' | 'updated' | 'unchanged' | 'failed' | 'would_create' | 'would_update' | 'skipped' | 'waiting';
     id?: string | null;
     system?: string;
     webhookUrl?: string;

@@ -2,6 +2,16 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.16.0 (2026-11-03)
+
+- Added: `seolyticize` in `CookiePresetVendor`, and `none` in `StorageType` (a row that stores nothing in the browser).
+- Added: `integrations.connect('forumulate', { cbid, providerKey, orgId, executor? })` types: `orgId` on the request; `key` and `request` are optional on the answer (Forumulate's has neither).
+- Added: `data` on `ExecutorPresets` (the same list as `presets`).
+
+## 0.15.1 (2026-11-03)
+
+- Added: `incomplete` on `CookiePreset` (names the site writes that the applied preset does not declare), and `atlas.connect` on the provision request types.
+
 ## 0.15.0 (2026-11-03)
 
 - Added: `fileStore(dir)`, `sqlStore({ query })` with `RIGHTS_STORE_TABLE_SQL`, and `redisStore(client)` in `@cookiemunch/sdk/rights`.

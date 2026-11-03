@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.15.1';
+export const SDK_VERSION = '0.16.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -237,7 +237,8 @@ export interface CategorizedCookie {
 }
 
 /** What a declaration row describes. */
-export type StorageType = 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB';
+/** `none`: a cookieless processor (an analytics beacon) declared so the policy names it; nothing is stored. */
+export type StorageType = 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB' | 'none';
 
 /** A cookie the site owner retired: the site renamed or stopped setting it. */
 export interface RetiredCookie {
@@ -281,7 +282,7 @@ export interface DeclaredCookieInput {
   domain?: string;
   /** Treat the name as a prefix wildcard (a trailing `*` does the same). */
   pattern?: boolean;
-  /** A cookie (default) or a key in localStorage, sessionStorage or IndexedDB. */
+  /** A cookie (default), a key in localStorage, sessionStorage or IndexedDB, or `none` (stores nothing: a cookieless processor). */
   type?: StorageType;
 }
 
@@ -328,7 +329,7 @@ export interface CookieTranslateResult {
 }
 
 /** A platform whose cookies and storage a preset declares. */
-export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch' | 'referalli' | 'firstpromoter' | 'partnerstack' | 'tapfiliate' | 'impact'
+export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch' | 'referalli' | 'firstpromoter' | 'partnerstack' | 'tapfiliate' | 'impact' | 'seolyticize'
   /** @deprecated the old name of `referalli`, accepted until 2027-10-23. */
   | 'referally';
 
@@ -2119,6 +2120,8 @@ export interface ExecutorPresetStep {
 /** The presets, which are usable now, and this org's canary address. */
 export interface ExecutorPresets {
   canaryEmail: string;
+  /** The same list as `presets`, under the name every list answer uses. */
+  data?: ExecutorPresets['presets'];
   presets: Array<{
     name: ExecutorPresetName;
     title: string;
@@ -2514,7 +2517,7 @@ export interface CookieMunchClient {
     unretireCookie(cbid: string, name: string): Promise<void>;
     /** What un-retiring would leave; nothing is removed. */
     unretireCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<{ dryRun: true; retired: RetiredCookie[] }>;
-    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch, referalli, firstpromoter, partnerstack, tapfiliate, impact): params, what it declared here, manifest status. */
+    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch, referalli, firstpromoter, partnerstack, tapfiliate, impact, seolyticize): params, what it declared here, manifest status. */
     cookiePresets(cbid: string): Promise<{ presets: CookiePreset[]; aliases?: Record<string, string> }>;
     /**
      * Apply (or re-sync) a vendor preset: declares what that platform writes, marked
