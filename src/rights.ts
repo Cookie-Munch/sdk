@@ -73,11 +73,20 @@ export interface RightsRequest {
 
 type Callback = (r: RightsRequest) => Promise<RightsOutcome | void> | RightsOutcome | void;
 
-/** Where request state and idempotency answers live. A `Map` is one; so is most of a Redis client. */
+/**
+ * Where request state and idempotency answers live. A `Map` is one; `fileStore`, `sqlStore` and
+ * `redisStore` below are durable ones. Idempotency answers are set with `ttlSeconds` (24 hours) and
+ * a store may drop them after that; request state (a scheduled erasure included) is set with none and
+ * must be kept. `delete`, when present, removes an answer the handlers found expired.
+ */
 export interface RightsStore {
   get(key: string): Promise<string | null | undefined> | string | null | undefined;
-  set(key: string, value: string): unknown;
+  set(key: string, value: string, opts?: { ttlSeconds?: number }): unknown;
+  delete?(key: string): unknown;
 }
+
+/** How long an Idempotency-Key answer is replayed. */
+export const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
 
 export interface RightsHandlersOptions {
   /** The key Cookie Munch sends as `Authorization: Bearer <key>`. */
@@ -87,7 +96,12 @@ export interface RightsHandlersOptions {
   /** The subject id for these emails / this identity, or null. */
   lookup: (input: RightsLookupInput) => Promise<string | null | undefined> | string | null | undefined;
   access?: Callback;
-  /** `deletion` (and `closure`, when there is no `close`). Runs at `executeAfter`, not before. */
+  /**
+   * `deletion` (and `closure`, when there is no `close`). With a future `executeAfter` the request is
+   * stored as `scheduled` and there is NO timer in your process: `erase` runs inside the first
+   * `GET /requests/{id}` at or after `executeAfter`, which is Cookie Munch's next poll (its sweep runs
+   * every 10 minutes). So the state must survive a restart: give production a durable `store`.
+   */
   erase?: Callback;
   close?: Callback;
   restrict?: Callback;
@@ -96,7 +110,8 @@ export interface RightsHandlersOptions {
   status?: Callback;
   /**
    * Default: in memory, which a restart empties. A scheduled erasure whose state is gone is never
-   * run (it answers `rejected`), so give production a durable store.
+   * run (it answers `rejected`), so give production a durable store: `fileStore(dir)`,
+   * `sqlStore({ query })` or `redisStore(client)`.
    */
   store?: RightsStore;
   now?: () => number;
@@ -170,7 +185,7 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   if (typeof o.lookup !== 'function') throw new Error('createRightsHandlers: lookup is required');
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error('createRightsHandlers: needs Web Crypto (globalThis.crypto.subtle)');
-  // shortcut: the default store never forgets an entry; fine for the volume of rights requests, pass `store` for more.
+  // shortcut: the default Map keeps an expired idempotency answer until it is read again; fine for the volume of rights requests, pass `store` for more.
   const store: RightsStore = o.store ?? new Map<string, string>();
   const now = o.now ?? (() => Date.now());
   const hmacKey = subtle.importKey('raw', enc.encode(o.idSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
@@ -333,8 +348,10 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     if (idemKey !== null) {
       if (idemKey.length < 16 || idemKey.length > 128) return bad('Idempotency-Key must be 16-128 characters', 'Idempotency-Key');
       const seen = await store.get(`idem:${idemKey}`);
-      if (seen) {
-        const first = JSON.parse(seen) as { body: string; status: number; answer: unknown };
+      const first = seen ? (JSON.parse(seen) as { body: string; status: number; answer: unknown; at?: number }) : null;
+      // Checked here too, so a store that ignores ttlSeconds (a Map) still forgets after 24 hours.
+      if (first && first.at !== undefined && now() - first.at >= IDEMPOTENCY_TTL_SECONDS * 1000) await store.delete?.(`idem:${idemKey}`);
+      else if (first) {
         return first.body === text ? json(first.status, first.answer) : json(409, { error: 'Idempotency-Key reused with a different body', field: 'Idempotency-Key' });
       }
     }
@@ -356,7 +373,10 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
       else return json(404, { error: 'not_found' });
     } else return json(404, { error: 'not_found' });
 
-    if (idemKey !== null && res.ok) await store.set(`idem:${idemKey}`, JSON.stringify({ body: text, status: res.status, answer: await res.clone().json() }));
+    if (idemKey !== null && res.ok) {
+      const answer = { body: text, status: res.status, answer: await res.clone().json(), at: now() };
+      await store.set(`idem:${idemKey}`, JSON.stringify(answer), { ttlSeconds: IDEMPOTENCY_TTL_SECONDS });
+    }
     return res;
   }
 
@@ -367,4 +387,111 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
       return json(500, { error: 'internal_error' });
     });
   return { fetch, GET: fetch, POST: fetch };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Durable stores. No dependencies: each adapts something your app already has.
+
+type DurableStore = RightsStore & { delete(key: string): Promise<void> };
+
+/**
+ * One JSON file per key in `dir` (created if missing), named by the key's SHA-256 so any key is a safe
+ * filename. Writes go to a temporary file renamed into place, so a crash never leaves half a file. An
+ * entry past its TTL reads as missing and is removed. Node, Deno and Bun: `node:fs` is loaded on first
+ * use, so importing this entry point on an edge runtime still works.
+ */
+export function fileStore(dir: string): DurableStore {
+  // shortcut: an expired idempotency file is removed when read, not swept; prune `dir` by mtime if it ever grows large.
+  let fsp: Promise<typeof import('node:fs/promises')> | undefined;
+  const fs = () => (fsp ??= import('node:fs/promises').then(async (m) => (await m.mkdir(dir, { recursive: true }), m)));
+  const pathOf = async (key: string) => {
+    const hash = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', enc.encode(key)));
+    return `${dir.replace(/[\\/]+$/, '')}/${[...hash].map((b) => b.toString(16).padStart(2, '0')).join('')}.json`;
+  };
+  const del = async (key: string) => {
+    await (await fs()).rm(await pathOf(key), { force: true });
+  };
+  return {
+    async get(key) {
+      let raw: string;
+      try {
+        raw = await (await fs()).readFile(await pathOf(key), 'utf8');
+      } catch (e) {
+        if ((e as { code?: string }).code === 'ENOENT') return null;
+        throw e;
+      }
+      const rec = JSON.parse(raw) as { v: string; exp?: number };
+      if (rec.exp !== undefined && Date.now() >= rec.exp) {
+        await del(key);
+        return null;
+      }
+      return rec.v;
+    },
+    async set(key, value, opts) {
+      const m = await fs();
+      const file = await pathOf(key);
+      const tmp = `${file}.${b64url(globalThis.crypto.getRandomValues(new Uint8Array(6)))}.tmp`;
+      await m.writeFile(tmp, JSON.stringify({ v: value, ...(opts?.ttlSeconds ? { exp: Date.now() + opts.ttlSeconds * 1000 } : {}) }));
+      await m.rename(tmp, file);
+    },
+    delete: del,
+  };
+}
+
+/** The table `sqlStore` uses (Postgres). Run it once, in a migration. */
+export const RIGHTS_STORE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS cookiemunch_rights_store (
+  key text PRIMARY KEY,
+  value text NOT NULL,
+  expires_at timestamptz
+)`;
+
+/**
+ * A store over one SQL table (`RIGHTS_STORE_TABLE_SQL`, Postgres-flavoured). `query(sql, params)` runs a
+ * parameterised statement and answers `{ rows }` or the rows: `pool.query` from `pg` as it is, or a
+ * wrapper over your ORM's raw query. An expired row reads as missing; expired rows are purged by the
+ * next write that carries a TTL.
+ */
+export function sqlStore(o: { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] } | unknown[]> }): DurableStore {
+  const rows = async (sql: string, params: unknown[]) => {
+    const r = await o.query(sql, params);
+    return (Array.isArray(r) ? r : r.rows) as Array<{ value?: string }>;
+  };
+  return {
+    async get(key) {
+      return (await rows('SELECT value FROM cookiemunch_rights_store WHERE key = $1 AND (expires_at IS NULL OR expires_at > now())', [key]))[0]?.value ?? null;
+    },
+    async set(key, value, opts) {
+      const ttl = opts?.ttlSeconds ?? null;
+      await rows(
+        'INSERT INTO cookiemunch_rights_store (key, value, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3::integer)) '
+          + 'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at',
+        [key, value, ttl],
+      );
+      if (ttl !== null) await rows('DELETE FROM cookiemunch_rights_store WHERE expires_at <= now()', []);
+    },
+    async delete(key) {
+      await rows('DELETE FROM cookiemunch_rights_store WHERE key = $1', [key]);
+    },
+  };
+}
+
+/** The part of a Redis client `redisStore` uses: node-redis v4's shape, `set(key, value, { EX })`. */
+export interface RightsRedisClient {
+  get(key: string): Promise<string | null | undefined>;
+  set(key: string, value: string, opts?: { EX: number }): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+}
+
+/** Keys under `cookiemunch:rights:`; idempotency answers expire through Redis's own `EX`. */
+export function redisStore(client: RightsRedisClient): DurableStore {
+  const k = (key: string) => `cookiemunch:rights:${key}`;
+  return {
+    get: (key) => client.get(k(key)),
+    async set(key, value, opts) {
+      await (opts?.ttlSeconds ? client.set(k(key), value, { EX: opts.ttlSeconds }) : client.set(k(key), value));
+    },
+    async delete(key) {
+      await client.del(k(key));
+    },
+  };
 }

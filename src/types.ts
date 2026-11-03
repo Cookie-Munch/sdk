@@ -476,6 +476,11 @@ export interface IntegrationConnect {
   providerKey: string;
   /** Only for a provider with no built-in connector. A body value "{apiKey}" becomes the minted key. */
   connector?: { url: string; method?: 'PUT' | 'POST'; body: Record<string, unknown> };
+  /**
+   * Atlas only: also create (or update) the `atlas` connection, holding the narrow key Atlas mints for it and
+   * the `whsec_` secret of the completion webhook Atlas points at its `webhookUrl`. Needs a key not locked to properties.
+   */
+  executor?: boolean;
 }
 
 export interface IntegrationConnectResult {
@@ -491,6 +496,15 @@ export interface IntegrationConnectResult {
   /** Earlier keys for this provider and site, revoked now. */
   revoked?: string[];
   wouldRevoke?: string[];
+  /** With `executor: true`: the `atlas` connection (answer 207 when it could not be stored). */
+  executor?: {
+    status: 'created' | 'updated' | 'unchanged' | 'failed' | 'would_create' | 'would_update';
+    id?: string | null;
+    system?: string;
+    webhookUrl?: string;
+    hasWebhookSecret?: boolean;
+    error?: string;
+  };
 }
 
 /**

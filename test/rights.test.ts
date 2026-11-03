@@ -4,7 +4,10 @@
  * Idempotency-Key, refuses forged request ids, and never erases before executeAfter or after a cancel.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { createRightsHandlers, type RightsHandlersOptions } from '../src/rights.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRightsHandlers, fileStore, sqlStore, redisStore, RIGHTS_STORE_TABLE_SQL, type RightsHandlersOptions } from '../src/rights.js';
 import { runExecutorConformance, CONFORMANCE_RULES } from '../src/executor-conformance.js';
 
 const key = 'sk_exec_0123456789abcdef';
@@ -215,6 +218,90 @@ describe('createRightsHandlers', () => {
   it('refuses weak options at construction', () => {
     expect(() => createRightsHandlers({ key, idSecret: 'short', lookup: () => null })).toThrow(/idSecret/);
     expect(() => createRightsHandlers({ key: '', idSecret, lookup: () => null })).toThrow(/key/);
+  });
+
+  it('fileStore: a scheduled erasure survives a restart and runs on the next poll after executeAfter', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cm-rights-'));
+    try {
+      const clock = { t: T0 };
+      const first = make({ store: fileStore(dir) }, clock);
+      const opened = await (await first.call('POST', '/requests', { subjectId: 'u1', type: 'deletion', caseId: 'c', executeAfter: new Date(T0 + 3600_000).toISOString() })).json();
+      expect(opened.status).toBe('scheduled');
+      // "Restart": a new handler over the same directory. Nothing runs until Cookie Munch asks.
+      const second = make({ store: fileStore(dir) }, clock);
+      expect(await (await second.call('GET', `/requests/${opened.id}`)).json()).toMatchObject({ status: 'scheduled' });
+      clock.t = T0 + 3600_000;
+      expect(second.erased).toEqual([]);
+      expect(await (await second.call('GET', `/requests/${opened.id}`)).json()).toMatchObject({ status: 'completed' });
+      expect(second.erased).toEqual(['u1']);
+      expect(first.erased).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('forgets idempotency answers after 24 hours (handler clock and fileStore TTL)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cm-rights-'));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T0);
+    try {
+      const access = vi.fn(() => ({ status: 'completed' as const }));
+      const clock = { t: T0 };
+      const store = fileStore(dir);
+      const { call } = make({ access, store }, clock);
+      const k = { 'idempotency-key': 'case-7:conn-1:open' };
+      const body = { subjectId: 'u1', type: 'access', caseId: 'case-7' };
+      await call('POST', '/requests', body, k);
+      expect(await store.get('idem:case-7:conn-1:open')).toBeTruthy();
+      clock.t = T0 + 24 * 3600_000 - 1;
+      vi.setSystemTime(clock.t);
+      await call('POST', '/requests', body, k);
+      expect(access).toHaveBeenCalledTimes(1);
+      clock.t = T0 + 24 * 3600_000 + 1;
+      vi.setSystemTime(clock.t);
+      expect(await store.get('idem:case-7:conn-1:open')).toBeNull();
+      // A Map ignores the TTL; the handler's own check still forgets it, and deletes it.
+      const map = new Map<string, string>();
+      const m = make({ access, store: map }, { t: T0 });
+      await m.call('POST', '/requests', body, k);
+      m.clock.t = T0 + 24 * 3600_000;
+      await m.call('POST', '/requests', { ...body, caseId: 'other' }, k);
+      expect(access).toHaveBeenCalledTimes(3);
+      expect(JSON.parse(map.get('idem:case-7:conn-1:open')!).at).toBe(T0 + 24 * 3600_000);
+    } finally {
+      vi.useRealTimers();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sqlStore and redisStore pass the TTL through and keep request state without one', async () => {
+    const calls: Array<[string, unknown[]]> = [];
+    const sql = sqlStore({ query: async (s, p) => (calls.push([s, p]), s.startsWith('SELECT') ? { rows: [{ value: 'v' }] } : []) });
+    await sql.set('req:a', 'x');
+    await sql.set('idem:b', 'y', { ttlSeconds: 60 });
+    expect(await sql.get('req:a')).toBe('v');
+    await sql.delete('idem:b');
+    expect(calls.map(([s, p]) => [s.split(' ')[0], p])).toEqual([
+      ['INSERT', ['req:a', 'x', null]],
+      ['INSERT', ['idem:b', 'y', 60]],
+      ['DELETE', []],
+      ['SELECT', ['req:a']],
+      ['DELETE', ['idem:b']],
+    ]);
+    expect(RIGHTS_STORE_TABLE_SQL).toMatch(/CREATE TABLE IF NOT EXISTS cookiemunch_rights_store/);
+
+    const r: unknown[][] = [];
+    const redis = redisStore({ get: async (k) => (r.push(['get', k]), null), set: async (...a) => r.push(['set', ...a]), del: async (k) => r.push(['del', k]) });
+    await redis.set('req:a', 'x');
+    await redis.set('idem:b', 'y', { ttlSeconds: 60 });
+    await redis.get('req:a');
+    await redis.delete('idem:b');
+    expect(r).toEqual([
+      ['set', 'cookiemunch:rights:req:a', 'x'],
+      ['set', 'cookiemunch:rights:idem:b', 'y', { EX: 60 }],
+      ['get', 'cookiemunch:rights:req:a'],
+      ['del', 'cookiemunch:rights:idem:b'],
+    ]);
   });
 
   it('exposes the same handler as fetch, GET and POST', () => {

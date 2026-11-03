@@ -11,6 +11,7 @@ export default defineConfig({
       { find: /^@cookiemunch\/sdk$/, replacement: here('./src/index.ts') },
       { find: /^@cookiemunch\/sdk\/consent$/, replacement: here('./src/consent.ts') },
       { find: /^@cookiemunch\/sdk\/rights$/, replacement: here('./src/rights.ts') },
+      { find: /^@cookiemunch\/sdk\/embed$/, replacement: here('./src/embed.ts') },
     ],
   },
   esbuild: { jsx: 'automatic' },

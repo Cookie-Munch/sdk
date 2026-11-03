@@ -2,6 +2,12 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.15.0 (2026-11-03)
+
+- Added: `fileStore(dir)`, `sqlStore({ query })` with `RIGHTS_STORE_TABLE_SQL`, and `redisStore(client)` in `@cookiemunch/sdk/rights`.
+- Added: `RightsStore.set(key, value, { ttlSeconds })` and an optional `RightsStore.delete(key)`; backward compatible.
+- Changed: Idempotency-Key answers in `createRightsHandlers` expire after 24 hours (`IDEMPOTENCY_TTL_SECONDS`), whatever the store.
+
 ## 0.14.2 (2026-11-02)
 
 - Added: `planCookies` accepts `presets.custom` (the body of `presets.applyCustom`).

@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.14.2';
+export const SDK_VERSION = '0.15.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -485,8 +485,12 @@ export interface CookiePresetResult {
   removed: string[];
   skipped?: Array<{ name: string; reason: string }>;
   note?: string;
-  /** Rows filed under a category this site has switched off (`cookies[<name>].category`). */
-  warnings?: Array<{ field: string; reason: string }>;
+  /**
+   * Rows filed under a category this site has switched off (`cookies[<name>].category`); `preset_incomplete`
+   * (observed `names` under the vendor's prefixes the preset does not declare); `lifetime_default` (a referral
+   * preset's default lifetime: send `cookieDays`, or Referalli `programHandle`/`orgToken`).
+   */
+  warnings?: Array<{ field: string; reason: string; code?: string; names?: string[] }>;
   /** With `warnings`: a body for `sites.patchConfig` that fixes them; apply the preset again after. */
   suggestedConfigPatch?: Record<string, unknown>;
   /** True when called with the deprecated name `referally`. */
@@ -1868,6 +1872,12 @@ export interface PolicyOptions {
   effectiveDate?: string;
   /** Override the jurisdictions the policy addresses. */
   jurisdictions?: string[];
+  /** `cookies`: only the cookie table section (needs no contact email). */
+  fragment?: 'cookies';
+  /** With `fragment: 'cookies'`: Markdown (default) or escaped HTML tables. */
+  format?: 'markdown' | 'html';
+  /** The text's language; the policy is written in English only (`en`). */
+  lang?: string;
 }
 
 export interface AdPersonalizationInput {
@@ -2005,6 +2015,8 @@ export interface DsarExecutor {
   requireApproval?: boolean;
   /** Made with `verify: 'defer'` and no probe has passed yet: not planned into requests, not alerted on. Absent: active. */
   state?: 'awaiting_first_probe';
+  /** The last conformance run (`testExecutor` with `conformance: true`): rule counts and when (epoch ms). Null until one runs. */
+  lastConformance?: { passed: number; failed: number; at: number } | null;
   /** On create only: the completion secret, shown this once. */
   completionSecret?: string;
 }
@@ -2110,6 +2122,8 @@ export interface ExecutorPresets {
     title: string;
     latestVersion: number;
     defaultSystem?: string;
+    /** Presets of one family (cm-standard) a connection may move between in place: `updateExecutor(id, { preset })`. */
+    family?: string;
     params: Array<{ name: string; required: boolean; description: string; type?: 'string' | 'boolean' }>;
     available: boolean;
     waitingOn?: { platform: string; items: string[]; operations: string[] };
@@ -2209,6 +2223,12 @@ export interface DsarExecutorPatch {
   orchestrator?: 1 | 2;
   /** Park its erasures for approval; false stops parking new ones (parked ones still wait). */
   requireApproval?: boolean;
+  /**
+   * Another preset of the same family (cm-standard-v1 → cm-standard-v2) moves the connection in place, keeping its
+   * id, credentials and history; any other preset change is 409 immutable_field.
+   */
+  preset?: ExecutorPresetName;
+  presetVersion?: number;
 }
 
 /** One entry in a fulfilment task's status history. */
@@ -2357,11 +2377,12 @@ export interface CookieMunchClient {
     /**
      * Create a sibling organisation owned by the same account — for a separate business of
      * your own. Needs an unscoped key. Not reseller provisioning, which is for your customers.
+     * `inheritFrom` copies another of the account's orgs' data controller and mail provider (unverified until tested).
      */
     create(
       name: string,
-      opts?: { mintKey?: boolean; keyScopes?: string[]; keyExpiresInDays?: number; keyOwner?: string } & ResourceTagsInput,
-    ): Promise<{ org: { id: string; name: string; role: string }; apiKey?: string; keyError?: string }>;
+      opts?: { mintKey?: boolean; keyScopes?: string[]; keyExpiresInDays?: number; keyOwner?: string; inheritFrom?: string } & ResourceTagsInput,
+    ): Promise<{ org: { id: string; name: string; role: string }; apiKey?: string; keyError?: string; inherited?: { controller: boolean; mailProvider: boolean }; warnings?: string[] }>;
     /** Hard-delete a SANDBOX organisation of this account (created with metadata.stack_sandbox). Anything else: 403 not_a_sandbox. */
     deleteSandbox(id: string): Promise<SandboxPurge>;
   };
@@ -3169,6 +3190,17 @@ function metaQs(o: MetadataFilter | undefined): string {
   return parts.length ? `?${parts.join('&')}` : '';
 }
 
+/**
+ * From API version 2026-11-03 a list answers `{ data: [...] }` (plus `next` when it paginates) instead of a bare
+ * array; hand back the array either way, so a list method's result does not depend on the key's version.
+ */
+function unwrapList(version: string | null, body: unknown): unknown {
+  if (!version || version < '2026-11-03' || !body || typeof body !== 'object' || Array.isArray(body)) return body;
+  const o = body as Record<string, unknown>;
+  const keys = Object.keys(o);
+  return Array.isArray(o.data) && keys.every((k) => k === 'data' || k === 'next') ? o.data : body;
+}
+
 function qs(query: Record<string, number | string | undefined> | undefined): string {
   if (!query) return '';
   const parts: string[] = [];
@@ -3217,7 +3249,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     if (res.status === 204) return undefined;
     if (raw) return res.text();
     const contentType = res.headers.get('content-type') ?? '';
-    return contentType.includes('application/json') ? res.json() : res.text();
+    return contentType.includes('application/json') ? unwrapList(res.headers.get('cookiemunch-version'), await res.json()) : res.text();
   }
 
   const get = (p: string) => request('GET', p);
@@ -3250,6 +3282,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
           org: { id: string; name: string; role: string };
           apiKey?: string;
           keyError?: string;
+          inherited?: { controller: boolean; mailProvider: boolean };
+          warnings?: string[];
         }>,
       deleteSandbox: (id) => request('DELETE', `/orgs/${enc(id)}?hard=1`) as Promise<SandboxPurge>,
     },
@@ -3310,7 +3344,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       policy: (cbid, o) =>
         request(
           'GET',
-          `/sites/${enc(cbid)}/policy${qs({ contactEmail: o?.contactEmail, effectiveDate: o?.effectiveDate, jurisdictions: o?.jurisdictions?.join(',') })}`,
+          `/sites/${enc(cbid)}/policy${qs({ contactEmail: o?.contactEmail, effectiveDate: o?.effectiveDate, jurisdictions: o?.jurisdictions?.join(','), fragment: o?.fragment, format: o?.format, lang: o?.lang })}`,
           undefined,
           true,
         ) as Promise<string>,

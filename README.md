@@ -81,5 +81,11 @@ export const { GET, POST } = createRightsHandlers({
   lookup: ({ emails, identity }) => findUserId(emails, identity),
   access: async (r) => ({ status: 'completed', result: await exportUser(r.subjectId) }),
   erase: async (r) => { await deleteUser(r.subjectId); },
+  store: fileStore('/var/lib/myapp/rights'), // import it too; or sqlStore({ query }) / redisStore(client)
 });
 ```
+
+The default store is in memory. A scheduled erasure has no timer in your process: `erase` runs on
+Cookie Munch's next poll after `executeAfter` (every 10 minutes), so production needs a durable
+`store`: `fileStore(dir)`, `sqlStore({ query })` (table: `RIGHTS_STORE_TABLE_SQL`) or
+`redisStore(client)`.

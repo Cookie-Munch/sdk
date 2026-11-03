@@ -1,6 +1,6 @@
 {
   "name": "@cookiemunch/sdk",
-  "version": "0.14.2",
+  "version": "0.15.0",
   "description": "Typed REST client for the Cookie Munch Developer API (/v1)",
   "license": "MIT",
   "type": "module",
@@ -22,6 +22,11 @@
       "types": "./dist/rights.d.ts",
       "import": "./dist/rights.js",
       "require": "./dist/rights.cjs"
+    },
+    "./embed": {
+      "types": "./dist/embed.d.ts",
+      "import": "./dist/embed.js",
+      "require": "./dist/embed.cjs"
     }
   },
   "files": [
@@ -46,6 +51,7 @@
   },
   "devDependencies": {
     "@types/node": "22.20.0",
+    "happy-dom": "21.0.4",
     "tsup": "8.5.1",
     "typescript": "5.9.3",
     "vitest": "2.1.9"
