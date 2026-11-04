@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.16.0';
+export const SDK_VERSION = '0.17.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -326,6 +326,20 @@ export interface CookieTranslateResult {
   /** `text` is absent on a dry run. */
   changes: Array<{ name: string; language: string; source: string; text?: string }>;
   skipped: Array<{ name: string; language: string; reason: string }>;
+}
+
+/** POST /v1/sites/:cbid/config/translate */
+export interface ConfigTranslateResult {
+  dryRun: boolean;
+  provider: 'deepl' | 'google' | null;
+  languages: string[];
+  unsupported: Array<{ language: string; reason: string }>;
+  failed: Array<{ language: string; error: string }>;
+  characters: number;
+  translated: number;
+  /** Per copy path (`banner.title`, `categories.chat.label`) and language; `text` is absent on a dry run. */
+  changes: Array<{ path: string; language: string; source: string; text?: string }>;
+  skipped: Array<{ path: string; language: string; reason: string }>;
 }
 
 /** A platform whose cookies and storage a preset declares. */
@@ -2548,6 +2562,11 @@ export interface CookieMunchClient {
      * account. Never overwrites text a row has. `dryRun` lists the changes and calls no provider.
      */
     translateCookies(cbid: string, input?: { languages?: string[]; names?: string[] }, opts?: { dryRun?: boolean }): Promise<CookieTranslateResult>;
+    /**
+     * The same for the site's own banner and category copy: fills the `i18n.overrides` languages
+     * it lacks on the connected account. Never overwrites a person's text. `dryRun` calls no provider.
+     */
+    translateConfig(cbid: string, input?: { languages?: string[] }, opts?: { dryRun?: boolean }): Promise<ConfigTranslateResult>;
     /** Remove every declaration a vendor preset made. */
     removeCookiePreset(cbid: string, vendor: CookiePresetVendor | (string & {}), opts?: { dryRun?: boolean }): Promise<{ vendor: string; removed: string[]; dryRun?: true; declared?: DeclaredCookie[]; diff?: DeclarationDiff }>;
     /** Remove every stored (scanned or observed) row of this name. A declaration of it stays. */
@@ -3389,6 +3408,8 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       disconnectTranslation: (cbid) => request('DELETE', `/sites/${enc(cbid)}/translation`) as Promise<TranslationConnection>,
       translateCookies: (cbid, input, o) =>
         request('POST', `/sites/${enc(cbid)}/cookies/translate${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input ?? {}) as Promise<CookieTranslateResult>,
+      translateConfig: (cbid, input, o) =>
+        request('POST', `/sites/${enc(cbid)}/config/translate${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input ?? {}) as Promise<ConfigTranslateResult>,
       removeCookiePreset: (cbid, vendor, o) =>
         request('DELETE', `/sites/${enc(cbid)}/cookies/presets/${enc(vendor)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`) as Promise<{
           vendor: CookiePresetVendor;

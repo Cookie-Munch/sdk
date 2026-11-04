@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.17.0 (2026-11-04)
+
+- Added: `sites.translateConfig(cbid, { languages?, dryRun? })`: fills the missing languages of the site's own banner and category copy on its connected DeepL or Google account.
+- Added: `i18n.autoTranslate` and `i18n.machineTranslations` on the site config types.
+
 ## 0.16.0 (2026-11-03)
 
 - Added: `seolyticize` in `CookiePresetVendor`, and `none` in `StorageType` (a row that stores nothing in the browser).
