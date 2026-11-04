@@ -310,3 +310,104 @@ describe('createRightsHandlers', () => {
     expect(h.POST).toBe(h.fetch);
   });
 });
+
+describe('createRightsHandlers completion', () => {
+  const secret = `whsec_${Buffer.from('k'.repeat(32)).toString('base64')}`;
+  const url = 'https://api.cookiemunch.net/v1/dsar/executors/exec_1/completions';
+  function sender(answers: Array<number | Error> = []) {
+    const sent: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+    const fetch = vi.fn(async (u: string, init: RequestInit) => {
+      sent.push({ url: u, headers: init.headers as Record<string, string>, body: init.body as string });
+      const a = answers.shift() ?? 204;
+      if (a instanceof Error) throw a;
+      return new Response(null, { status: a });
+    }) as unknown as typeof globalThis.fetch;
+    return { fetch, sent };
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  // Web Crypto settles off the microtask queue, so step fake time until the condition holds.
+  async function stepUntil(done: () => boolean) {
+    for (let i = 0; i < 200 && !done(); i++) {
+      await new Promise((r) => setImmediate(r));
+      await vi.advanceTimersByTimeAsync(500);
+    }
+  }
+
+  it('pushes a final status inline, signed the Standard Webhooks way over the decoded whsec_ key', async () => {
+    const { createHmac } = await import('node:crypto');
+    const s = sender();
+    const { call } = make({ completion: { url, secret, fetch: s.fetch } });
+    const opened = (await (await call('POST', '/requests', { type: 'export', subjectId: 'u1', caseId: 'case_9' })).json()) as { id: string };
+    await flush();
+    expect(s.sent).toHaveLength(1);
+    const { headers, body } = s.sent[0]!;
+    expect(s.sent[0]!.url).toBe(url);
+    expect(headers['webhook-timestamp']).toBe(String(Math.floor(T0 / 1000)));
+    expect(headers['webhook-id']).toMatch(/^[A-Za-z0-9._:-]{1,200}$/);
+    const expected = createHmac('sha256', Buffer.from('k'.repeat(32))).update(`${headers['webhook-id']}.${headers['webhook-timestamp']}.${body}`).digest('base64');
+    expect(headers['webhook-signature']).toBe(`v1,${expected}`);
+    expect(JSON.parse(body)).toMatchObject({ caseId: 'case_9', request: { id: opened.id, type: 'export', canonicalType: 'access', status: 'completed' } });
+  });
+
+  it('a pending request sends nothing until handlers.complete, which sends once', async () => {
+    const s = sender();
+    const { h, call } = make({ completion: { url, secret, fetch: s.fetch }, erase: () => ({ status: 'pending' }) });
+    const { id } = (await (await call('POST', '/requests', { type: 'erasure', subjectId: 'u1', caseId: 'c' })).json()) as { id: string };
+    await flush();
+    expect(s.sent).toHaveLength(0);
+    expect(await h.complete(id, { status: 'completed_with_retention', retention: [{ category: 'invoices', basis: 'legal_obligation' }] })).toEqual({ status: 'completed_with_retention', delivered: true });
+    expect(JSON.parse(s.sent[0]!.body).request.retention).toHaveLength(1);
+    // Already delivered: a second complete (or a read) sends nothing more.
+    expect(await h.complete(id)).toEqual({ status: 'completed_with_retention', delivered: false });
+    expect(((await (await call('GET', `/requests/${encodeURIComponent(id)}`)).json()) as { status: string }).status).toBe('completed_with_retention');
+    await flush();
+    expect(s.sent).toHaveLength(1);
+    await expect(h.complete('r1.forged.sig')).rejects.toThrow(/not a request id/);
+  });
+
+  it('a scheduled erasure that runs on the poll, and a cancel, are pushed too', async () => {
+    const s = sender();
+    const clock = { t: T0 };
+    const { call } = make({ completion: { url, secret, fetch: s.fetch } }, clock);
+    const later = new Date(T0 + 60_000).toISOString();
+    const a = (await (await call('POST', '/requests', { type: 'erasure', subjectId: 'u1', caseId: 'c1', executeAfter: later })).json()) as { id: string };
+    const b = (await (await call('POST', '/requests', { type: 'erasure', subjectId: 'u1', caseId: 'c2', executeAfter: later })).json()) as { id: string };
+    await flush();
+    expect(s.sent).toHaveLength(0);
+    await call('POST', `/requests/${encodeURIComponent(b.id)}/cancel`);
+    clock.t += 60_000;
+    await call('GET', `/requests/${encodeURIComponent(a.id)}`);
+    // The pushes are fire-and-forget (signing is async): wait for both rather than a fixed number of ticks.
+    await vi.waitFor(() => expect(s.sent).toHaveLength(2));
+    expect(s.sent.map((x) => JSON.parse(x.body).request.status).sort()).toEqual(['cancelled', 'completed']);
+  });
+
+  it('retries a 5xx with the same Webhook-Id, and a network error never reaches the request', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      const s = sender([503, new Error('ECONNRESET'), 204]);
+      const { h, call } = make({ completion: { url, secret, fetch: s.fetch }, erase: () => ({ status: 'processing' }) });
+      const { id } = (await (await call('POST', '/requests', { type: 'erasure', subjectId: 'u1', caseId: 'c' })).json()) as { id: string };
+      let result: unknown;
+      void h.complete(id).then((r) => (result = r));
+      await stepUntil(() => result !== undefined);
+      expect(result).toEqual({ status: 'completed', delivered: true });
+      expect(s.sent).toHaveLength(3);
+      expect(new Set(s.sent.map((x) => x.headers['webhook-id'])).size).toBe(1);
+
+      const down = sender([new Error('down'), new Error('down'), new Error('down')]);
+      const h2 = make({ completion: { url, secret, fetch: down.fetch } });
+      const res = await h2.call('POST', '/requests', { type: 'export', subjectId: 'u1', caseId: 'c' });
+      expect(res.status).toBe(201);
+      await stepUntil(() => down.sent.length === 3);
+      expect(down.sent).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses a completion without url or secret at construction', () => {
+    expect(() => make({ completion: { url: '', secret } })).toThrow(/completion/);
+    expect(() => make({ completion: { url, secret: '' } })).toThrow(/completion/);
+  });
+});

@@ -19,7 +19,9 @@
  * Built in: a constant-time key check (no key or a wrong key is a bare 404, so the endpoint is not
  * advertised), `X-Version` and `Cache-Control: no-store` on every authorised answer, Idempotency-Key
  * replay, HMAC-signed request ids (a forged id is a 404), `executeAfter` scheduling and cancel, and
- * the canary subject, answered here so your callbacks never see it.
+ * the canary subject, answered here so your callbacks never see it. With `completion`, each request
+ * that reaches a final status is also pushed to Cookie Munch as a signed completion, so it closes in
+ * seconds instead of on the next poll.
  *
  * A separate entry point so the API client never loads it. Web platform only (Request, Response,
  * crypto.subtle): Node 20+, Deno, Bun and edge runtimes.
@@ -115,6 +117,13 @@ export interface RightsHandlersOptions {
    */
   store?: RightsStore;
   now?: () => number;
+  /**
+   * Signed completions (cm-standard-v2): the connection's `completionsUrl` and its `completionSecret`
+   * (`whsec_…`, shown once when the connection is created or the secret rolled; the connection's
+   * `webhookSecret` verifies too). Each request that reaches a final status is POSTed there, signed,
+   * with up to 3 attempts. A failed push never fails a request: Cookie Munch's poll still closes it.
+   */
+  completion?: { url: string; secret: string; fetch?: typeof fetch };
 }
 
 export interface RightsHandlers {
@@ -122,6 +131,13 @@ export interface RightsHandlers {
   fetch(req: Request): Promise<Response>;
   GET(req: Request): Promise<Response>;
   POST(req: Request): Promise<Response>;
+  /**
+   * Finish a request a callback answered `pending` or `processing` for, out of band (a job queue, a
+   * manual review): stores the final outcome and, with `completion`, pushes it and waits for the push.
+   * `delivered` is false when there is no `completion` or every attempt failed (polling still closes it).
+   * A request already final is left as it is; its completion is re-sent only if it was never delivered.
+   */
+  complete(requestId: string, outcome?: RightsOutcome): Promise<{ status: RightsStatus; delivered: boolean }>;
 }
 
 const CANONICAL: Record<string, RightsType> = {
@@ -129,6 +145,10 @@ const CANONICAL: Record<string, RightsType> = {
   closure: 'closure', restriction: 'restriction', rectification: 'rectification',
 };
 const OUTCOMES = new Set(['pending', 'processing', 'completed', 'completed_with_retention', 'no_match', 'rejected']);
+/** The contract's final statuses: each one is pushed as a signed completion. */
+const FINAL = new Set<RightsStatus>(['completed', 'completed_with_retention', 'no_match', 'rejected', 'cancelled']);
+/** Wait before each completion attempt after the first. */
+const COMPLETION_BACKOFF_MS = [1_000, 4_000];
 const CANARY_EMAIL = /^canary-([0-9a-f]{16})@canary\.cookiemunch\.net$/;
 const CANARY_SUBJECT = /^canary_([0-9a-f]{16})$/;
 const CANARY_EXT = /^canary:([0-9a-f]{16})$/;
@@ -136,7 +156,7 @@ const CANARY_EXT = /^canary:([0-9a-f]{16})$/;
 /** What the signed id carries: enough to answer without trusting the store for it. */
 type IdClaims = { s: string; t: RightsType; y: string; c: string; a?: number; n: string };
 /** The request's mutable state, in the store under `req:<id>`. */
-type Stored = { status: RightsStatus; eta?: string; detail?: string; retention?: RightsRetention[]; result?: unknown; reason?: string };
+type Stored = { status: RightsStatus; eta?: string; detail?: string; retention?: RightsRetention[]; result?: unknown; reason?: string; notified?: true };
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -189,6 +209,14 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   const store: RightsStore = o.store ?? new Map<string, string>();
   const now = o.now ?? (() => Date.now());
   const hmacKey = subtle.importKey('raw', enc.encode(o.idSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+  const completion = o.completion;
+  if (completion && (typeof completion.url !== 'string' || !/^https?:\/\//.test(completion.url) || typeof completion.secret !== 'string' || !completion.secret)) {
+    throw new Error('createRightsHandlers: completion needs { url, secret }: the connection\'s completionsUrl and completionSecret');
+  }
+  // Standard Webhooks: a `whsec_` secret's HMAC key is its base64-decoded remainder; anything else signs as typed.
+  const completionKey = completion
+    ? subtle.importKey('raw', (completion.secret.startsWith('whsec_') && fromB64url(completion.secret.slice(6).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''))) || enc.encode(completion.secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+    : undefined;
 
   async function mintId(claims: IdClaims): Promise<string> {
     const payload = b64url(enc.encode(JSON.stringify(claims)));
@@ -227,6 +255,46 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     ...(s.result !== undefined ? { result: s.result } : {}),
   });
 
+  /**
+   * Push a final status to `completionsUrl`, signed. Never throws: a failure is logged and left to the poll.
+   * Retried on a network error, a 5xx or a 429, with the same Webhook-Id, so a retry that did land is a no-op.
+   */
+  async function notify(id: string, c: IdClaims, s: Stored): Promise<boolean> {
+    if (!completion || !completionKey || !FINAL.has(s.status) || s.notified) return false;
+    try {
+      const body = JSON.stringify({ caseId: c.c, request: view(id, c, s) });
+      const webhookId = `cmc_${b64url(globalThis.crypto.getRandomValues(new Uint8Array(12)))}`;
+      const send = completion.fetch ?? globalThis.fetch;
+      for (let attempt = 0; attempt <= COMPLETION_BACKOFF_MS.length; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, COMPLETION_BACKOFF_MS[attempt - 1]));
+        const stamp = String(Math.floor(now() / 1000));
+        const sig = new Uint8Array(await subtle.sign('HMAC', await completionKey, enc.encode(`${webhookId}.${stamp}.${body}`)));
+        let status = 0;
+        try {
+          status = (await send(completion.url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'webhook-id': webhookId, 'webhook-timestamp': stamp, 'webhook-signature': `v1,${btoa(String.fromCharCode(...sig))}` },
+            body,
+          })).status;
+        } catch (err) {
+          console.warn('createRightsHandlers: completion push failed:', err);
+        }
+        if (status >= 200 && status < 300) {
+          const latest = await getStored(id);
+          if (latest && latest.status === s.status) await putStored(id, { ...latest, notified: true });
+          return true;
+        }
+        if (status !== 0 && status < 500 && status !== 429) {
+          console.warn(`createRightsHandlers: completion refused with ${status}; check completion.url and completion.secret`);
+          return false;
+        }
+      }
+    } catch (err) {
+      console.warn('createRightsHandlers: completion push failed:', err);
+    }
+    return false;
+  }
+
   const callbackFor = (t: RightsType): Callback | undefined =>
     ({ access: o.access, deletion: o.erase, closure: o.close ?? o.erase, restriction: o.restrict, rectification: o.rectify })[t];
 
@@ -244,7 +312,13 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
           ...(s.reason ? { reason: s.reason } : {}),
           ...(c.a !== undefined ? { executeAfter: new Date(c.a).toISOString() } : {}),
         })) as RightsOutcome | undefined);
-    const o2: RightsOutcome = out ?? { status: 'completed' };
+    const next = await record(id, s, out ?? { status: 'completed' });
+    void notify(id, c, next);
+    return next;
+  }
+
+  /** Fold an outcome into the stored state. */
+  async function record(id: string, s: Stored, o2: RightsOutcome): Promise<Stored> {
     if (!OUTCOMES.has(o2.status)) throw new Error(`a rights callback answered an unknown status "${String(o2.status)}"`);
     const next: Stored = { status: o2.status, ...(s.reason ? { reason: s.reason } : {}) };
     if (o2.eta) next.eta = o2.eta;
@@ -317,6 +391,7 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     if (s.status !== 'scheduled' && s.status !== 'pending') return json(409, { error: `too late to cancel a ${s.status} request`, field: 'id' });
     const next: Stored = { status: 'cancelled', ...(s.reason ? { reason: s.reason } : {}) };
     await putStored(id, next);
+    void notify(id, c, next);
     return json(200, view(id, c, next));
   }
 
@@ -386,7 +461,17 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
       console.error('createRightsHandlers:', err);
       return json(500, { error: 'internal_error' });
     });
-  return { fetch, GET: fetch, POST: fetch };
+  async function complete(requestId: string, outcome?: RightsOutcome): Promise<{ status: RightsStatus; delivered: boolean }> {
+    const c = await readId(requestId);
+    if (!c) throw new Error('createRightsHandlers.complete: not a request id these handlers issued');
+    const s = await getStored(requestId);
+    if (!s) throw new Error("createRightsHandlers.complete: this system no longer holds the request's state");
+    if (FINAL.has(s.status)) return { status: s.status, delivered: await notify(requestId, c, s) };
+    const next = await record(requestId, s, outcome ?? { status: 'completed' });
+    return { status: next.status, delivered: await notify(requestId, c, next) };
+  }
+
+  return { fetch, GET: fetch, POST: fetch, complete };
 }
 
 // ---------------------------------------------------------------------------------------------------

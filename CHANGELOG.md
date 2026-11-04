@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.18.0 (2026-11-04)
+
+- Added: `completion: { url, secret, fetch? }` on `createRightsHandlers` (`@cookiemunch/sdk/rights`): each request that reaches a final status is POSTed to the connection's `completionsUrl` as a signed cm-standard-v2 completion (Standard Webhooks headers, 3 attempts, never fails the request, sent once).
+- Added: `handlers.complete(requestId, outcome?)`: closes a `pending` or `processing` request out of band and pushes its completion; resolves to `{ status, delivered }`.
+
 ## 0.17.0 (2026-11-04)
 
 - Added: `sites.translateConfig(cbid, { languages?, dryRun? })`: fills the missing languages of the site's own banner and category copy on its connected DeepL or Google account.

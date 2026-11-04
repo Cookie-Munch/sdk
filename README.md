@@ -89,3 +89,7 @@ The default store is in memory. A scheduled erasure has no timer in your process
 Cookie Munch's next poll after `executeAfter` (every 10 minutes), so production needs a durable
 `store`: `fileStore(dir)`, `sqlStore({ query })` (table: `RIGHTS_STORE_TABLE_SQL`) or
 `redisStore(client)`.
+
+Add `completion: { url, secret }` (the connection's `completionsUrl` and `completionSecret`) and each
+request that reaches a final status is pushed to Cookie Munch as a signed completion, so it closes in
+seconds. Close a `pending` or `processing` request later with `await handlers.complete(requestId, outcome)`.
