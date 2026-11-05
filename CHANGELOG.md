@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.20.1 (2026-11-05)
+
+- Changed: comments name 424, not 502, for captcha_unreachable and identity_jwks_unreachable.
+
 ## 0.20.0 (2026-11-05)
 
 - API errors carry the server's `message` when it sends one, with `code` kept.

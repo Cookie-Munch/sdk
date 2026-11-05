@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.20.0';
+export const SDK_VERSION = '0.20.1';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -1454,7 +1454,7 @@ export interface RightsCaptcha {
 
 /**
  * `own` needs provider, siteKey and (the first time) secret; the provider is asked to accept the secret before
- * anything is saved (422 captcha_secret_invalid / 502 captcha_unreachable). `off` removes spam protection beyond
+ * anything is saved (422 captcha_secret_invalid / 424 captcha_unreachable). `off` removes spam protection beyond
  * the hidden spam-trap field, the rate limits and the email code.
  */
 export interface RightsCaptchaInput {
@@ -1493,7 +1493,7 @@ export interface RightsIdentity {
 }
 
 /**
- * The JWKS is fetched and checked before anything is saved (502 identity_jwks_unreachable /
+ * The JWKS is fetched and checked before anything is saved (424 identity_jwks_unreachable /
  * 422 identity_jwks_invalid). `authorizedParties` (your own origins) is required for clerk and atlas;
  * oidc_jwt needs an `audience` or `authorizedParties`. Issuer and JWKS URL are https on a host name,
  * never an IP address. The token must carry the email and a verified-email claim set to `true`
