@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.18.0';
+export const SDK_VERSION = '0.19.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -2004,7 +2004,8 @@ export interface DsarExecutor {
    * The last canary health check (hourly, and on `testExecutor(id, { canary: true })`). null
    * until the first; cleared when the address, profile or key changes.
    */
-  health: ExecutorHealth | null;
+  /** `{ status: 'pending' }` while it is registered ahead of its API (`state: 'pending'` on create). */
+  health: ExecutorHealth | { status: 'pending'; detail: string } | null;
   /** The preset it was built from; absent when hand-written. */
   preset?: ExecutorPresetName;
   presetVersion?: number;
@@ -2030,6 +2031,10 @@ export interface DsarExecutor {
   completionsUrl?: string;
   /** True: its erasures wait (status `awaiting_approval`) for `approveTask` or `rejectTask`. */
   requireApproval?: boolean;
+  /** Systems whose tasks must finish first. */
+  runAfter?: string[];
+  /** A sandbox fixture: no system behind it. */
+  fixture?: 'done' | 'no_match';
   /** Made with `verify: 'defer'` and no probe has passed yet: not planned into requests, not alerted on. Absent: active. */
   state?: 'awaiting_first_probe';
   /** The last conformance run (`testExecutor` with `conformance: true`): rule counts and when (epoch ms). Null until one runs. */

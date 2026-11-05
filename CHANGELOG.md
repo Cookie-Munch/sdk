@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.19.0
+
+- The conformance kit stops at a refused key: `code`, `required`, `fix`, `blocked`, and rules with `status: "blocked"` and `blockedBy`.
+- `requiredScopes` and `keyHint` options on `runExecutorConformance`.
+
 ## 0.18.0 (2026-11-04)
 
 - Added: `completion: { url, secret, fetch? }` on `createRightsHandlers` (`@cookiemunch/sdk/rights`): each request that reaches a final status is POSTed to the connection's `completionsUrl` as a signed cm-standard-v2 completion (Standard Webhooks headers, 3 attempts, never fails the request, sent once).

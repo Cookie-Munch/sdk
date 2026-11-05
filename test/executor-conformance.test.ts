@@ -37,9 +37,26 @@ describe('runExecutorConformance', () => {
     expect(failing(r)).toEqual(['requests.idempotency.replay', 'requests.idempotency.mismatch_409']);
   });
 
+  it('a key without the scope is one failure naming the scope, and the rest are blocked', async () => {
+    const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+    const fetchMock = (async (_u: string, init?: RequestInit) => {
+      const authed = (init?.headers as Record<string, string>).Authorization;
+      return authed ? respond(403, { error: 'Missing one of: contacts:read, privacy:execute' }) : respond(401, {});
+    }) as unknown as typeof fetch;
+    const named = await runExecutorConformance({ ...base, fetch: fetchMock, requiredScopes: ['privacy:execute'], keyHint: 'Mint it in Chatly.' });
+    expect(failing(named)).toEqual(['lookup.email.found']);
+    expect(named).toMatchObject({ ok: false, code: 'missing_scope', required: ['privacy:execute'], passed: 1, failed: 1, blocked: CONFORMANCE_RULES.length - 2 });
+    expect(named.fix).toMatch(/privacy:execute.*Mint it in Chatly/);
+    expect(named.rules.find((x) => x.id === 'version.header')).toMatchObject({ status: 'blocked', blockedBy: 'lookup.email.found' });
+    // No preset to ask: read off the system's own 403.
+    const read = await runExecutorConformance({ ...base, fetch: fetchMock });
+    expect(read.required).toEqual(['contacts:read', 'privacy:execute']);
+  });
+
   it('a wrong secret fails the lookups by name, and an unreachable executor skips everything but auth', async () => {
     const wrong = await runExecutorConformance({ ...base, secret: 'nope', fetch: referenceExecutor({ secret, canaryEmail, now: base.now }) });
-    expect(failing(wrong)).toContain('lookup.email.found');
+    expect(failing(wrong)).toEqual(['lookup.email.found']);
+    expect(wrong).toMatchObject({ code: 'credential_refused', failed: 1, blocked: CONFORMANCE_RULES.length - 2 });
     const down = await runExecutorConformance({ ...base, fetch: (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch });
     expect(failing(down)).toEqual(['auth.required']);
     expect(down.skipped).toBe(CONFORMANCE_RULES.length - 1);

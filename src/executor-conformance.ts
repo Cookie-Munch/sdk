@@ -17,7 +17,8 @@
  * No dependencies: `fetch` only, so it runs in Node 18+, a browser, or an edge runtime.
  */
 
-export type ConformanceStatus = 'pass' | 'fail' | 'skip';
+/** `blocked`: not run, because the rule named in `blockedBy` failed first and decides it. */
+export type ConformanceStatus = 'pass' | 'fail' | 'skip' | 'blocked';
 
 export interface ConformanceRuleResult {
   /** A stable id, e.g. `requests.execute_after.scheduled`. */
@@ -27,6 +28,8 @@ export interface ConformanceRuleResult {
   status: ConformanceStatus;
   /** What was seen, when it failed or was skipped. */
   detail?: string;
+  /** With status `blocked`: the rule whose failure stopped this one. */
+  blockedBy?: string;
 }
 
 export interface ConformanceReport {
@@ -35,6 +38,14 @@ export interface ConformanceReport {
   passed: number;
   failed: number;
   skipped: number;
+  /** Rules not run because an earlier failure decides them. */
+  blocked: number;
+  /** Set when the credential itself was refused: `missing_scope` (403) or `credential_refused` (401). */
+  code?: 'missing_scope' | 'credential_refused';
+  /** With `missing_scope`: the scopes the key needs, when known. */
+  required?: string[];
+  /** With `code`: the one thing to do next. */
+  fix?: string;
   rules: ConformanceRuleResult[];
   /** The `X-Version` the executor answered with, when it sent one. */
   version?: string;
@@ -58,6 +69,10 @@ export interface ConformanceOptions {
   now?: () => number;
   /** A per-run tag for idempotency keys and case ids. Default random. */
   runId?: string;
+  /** The scopes this system's key needs, when the caller knows them. Otherwise read off the system's own 403. */
+  requiredScopes?: string[];
+  /** Where to get a key with those scopes, added to `fix`. */
+  keyHint?: string;
 }
 
 /** The issuer the canary identity carries. */
@@ -174,6 +189,19 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
 
   // lookups
   const byEmail = await call('POST', '/lookup', { emails: [canaryEmail] }, { 'Idempotency-Key': key('lookup-email') });
+  // The key itself is refused: every later rule would fail for this one reason, so it is the only failure.
+  if (byEmail.status === 401 || byEmail.status === 403) {
+    fail('lookup.email.found', `the canary address: ${said(byEmail)}`);
+    for (const r of CONFORMANCE_RULES) if (!results.has(r.id)) results.set(r.id, { id: r.id, title: r.title, status: 'blocked', blockedBy: 'lookup.email.found' });
+    const code = byEmail.status === 403 ? 'missing_scope' as const : 'credential_refused' as const;
+    const named = [...new Set(JSON.stringify(byEmail.json ?? '').match(/\b[a-z_]+:[a-z_]+(?::[a-z_]+)*\b/g) ?? [])];
+    const required = o.requiredScopes?.length ? o.requiredScopes : named;
+    const hint = o.keyHint ? ` ${o.keyHint}` : '';
+    const fix = code === 'missing_scope'
+      ? `This key may not call the rights API (HTTP 403).${required.length ? ` It needs ${required.join(' or ')}.` : ' Give it the rights scope that system documents.'}${hint}`
+      : `This key was refused (HTTP 401): it is wrong, expired or revoked. Send a current one.${hint}`;
+    return { ...report(), code, ...(code === 'missing_scope' && required.length ? { required } : {}), fix };
+  }
   const subjectId = field(byEmail.json, 'subjectId');
   if (byEmail.status === 200 && field(byEmail.json, 'status') === 'found' && typeof subjectId === 'string' && subjectId) pass('lookup.email.found');
   else fail('lookup.email.found', `the canary address: ${said(byEmail)}`);
@@ -265,6 +293,6 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   function report(): ConformanceReport {
     const rules = CONFORMANCE_RULES.map((r) => results.get(r.id) ?? { id: r.id, title: r.title, status: 'skip' as const, detail: 'not reached' });
     const count = (s: ConformanceStatus) => rules.filter((r) => r.status === s).length;
-    return { ok: count('fail') === 0, passed: count('pass'), failed: count('fail'), skipped: count('skip'), rules, ...(version ? { version } : {}) };
+    return { ok: count('fail') === 0, passed: count('pass'), failed: count('fail'), skipped: count('skip'), blocked: count('blocked'), rules, ...(version ? { version } : {}) };
   }
 }

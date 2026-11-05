@@ -350,6 +350,12 @@ export interface DsarCaseCreate {
   reason?: string;
   /** Connections not to ask: system names, connection ids, or `self`. */
   skipSystems?: string[];
+  /** No notice to the person: for whoever sends notices off this case and its webhooks. */
+  silent?: boolean;
+  /** Every erasure waits for a person's approval, task by task. */
+  legalHold?: boolean;
+  /** Answers the real plan with read-only lookups. Files nothing. */
+  simulate?: boolean;
   /** Default true. */
   fulfill?: boolean;
   regulation?: 'gdpr' | 'ccpa' | 'lgpd' | 'pipeda' | 'vcdpa';
@@ -409,6 +415,8 @@ export interface DsarCase {
   trace: string | null;
   subject: { emails: string[]; identity: SubjectIdentity | null };
   skipSystems: string[];
+  silent?: boolean;
+  legalHold?: boolean;
   fulfill: boolean | null;
   cancelRequestedAt: string | null;
   test: boolean;
