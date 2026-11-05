@@ -411,3 +411,46 @@ describe('createRightsHandlers completion', () => {
     expect(() => make({ completion: { url, secret: '' } })).toThrow(/completion/);
   });
 });
+
+describe('the erase rule (eraseSubjectEmail)', () => {
+  const via = (h: ReturnType<typeof make>['h']) => ((input: string | URL | Request, init?: RequestInit) => h.fetch(new Request(input, init))) as typeof fetch;
+  const opts = { baseUrl: 'https://app.example', secret: key, canaryEmail, runId: 'run1', now: () => T0 };
+  const seeded = (doErase: boolean) => {
+    const people = new Set(['throwaway@example.com']);
+    const erased: string[] = [];
+    const { h } = make({
+      lookup: ({ emails }: { emails: string[] }) => (emails.some((e) => people.has(e)) ? 'u_throwaway' : null),
+      erase: (r: { subjectId: string }) => { erased.push(r.subjectId); if (doErase) people.clear(); return { status: 'completed' as const }; },
+    } as never);
+    return { h, erased };
+  };
+
+  it('runs your erase code and passes when the subject is gone', async () => {
+    const { h, erased } = seeded(true);
+    const r = await runExecutorConformance({ ...opts, fetch: via(h), eraseSubjectEmail: 'throwaway@example.com' });
+    expect(erased).toEqual(['u_throwaway']);
+    expect(r.rules.find((x) => x.id === 'requests.erase.removes_subject')?.status).toBe('pass');
+    expect(r.ok).toBe(true);
+  });
+
+  it('fails an erase that says completed and leaves the subject', async () => {
+    const r = await runExecutorConformance({ ...opts, fetch: via(seeded(false).h), eraseSubjectEmail: 'throwaway@example.com' });
+    expect(r.rules.find((x) => x.id === 'requests.erase.removes_subject')).toMatchObject({ status: 'fail', detail: expect.stringMatching(/a lookup afterwards/) });
+    expect(r.ok).toBe(false);
+  });
+
+  it('fails when the subject was not seeded, erasing nothing', async () => {
+    const { h, erased } = seeded(true);
+    const r = await runExecutorConformance({ ...opts, fetch: via(h), eraseSubjectEmail: 'nobody@example.com' });
+    expect(r.rules.find((x) => x.id === 'requests.erase.removes_subject')).toMatchObject({ status: 'fail', detail: expect.stringMatching(/must exist/) });
+    expect(erased).toEqual([]);
+  });
+
+  it('touches nothing real without the option, and refuses the canary as the subject', async () => {
+    const { h, erased } = seeded(true);
+    const r = await runExecutorConformance({ ...opts, fetch: via(h) });
+    expect(erased).toEqual([]);
+    expect(r.rules.some((x) => x.id === 'requests.erase.removes_subject')).toBe(false);
+    await expect(runExecutorConformance({ ...opts, fetch: via(h), eraseSubjectEmail: canaryEmail })).rejects.toThrow(/throwaway/);
+  });
+});

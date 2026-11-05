@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.21.0 (2026-11-05)
+
+- Added: eraseSubjectEmail on runExecutorConformance: requests.erase.removes_subject really erases that throwaway subject through the receiver's erase code, then checks a lookup no longer finds it.
+
 ## 0.20.1 (2026-11-05)
 
 - Changed: comments name 424, not 502, for captcha_unreachable and identity_jwks_unreachable.

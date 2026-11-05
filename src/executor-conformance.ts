@@ -10,7 +10,7 @@
  * It only ever touches the CANARY subject — an address no real person has. The contract asks every
  * implementation to treat the canary as an existing synthetic person: it is found by its email and
  * by its identity, requests on it move through the full state machine, and nothing real is ever
- * erased. So the kit can check that an erasure waits for `executeAfter`, that a cancel leaves the
+ * erased (the one exception is `eraseSubjectEmail`, a throwaway subject the caller names). So the kit can check that an erasure waits for `executeAfter`, that a cancel leaves the
  * person in place, and that an identity is never matched to someone else through a shared email —
  * without a real person's data being anywhere near it.
  *
@@ -63,6 +63,13 @@ export interface ConformanceOptions {
   canaryEmail: string;
   /** A subject you seeded in your own store. It is only looked up, never erased. Without it, `lookup.test_subject.found` is skipped. */
   testSubjectEmail?: string;
+  /**
+   * A THROWAWAY subject you seeded in your own store. It IS erased, for real, through your own erase code, so reseed it
+   * before each run. Without it, `requests.erase.removes_subject` does not run and nothing real is touched.
+   */
+  eraseSubjectEmail?: string;
+  /** How long to wait for that erasure to finish, in ms. Default 30000. */
+  eraseTimeoutMs?: number;
   /** How the secret is sent. Default `Authorization: Bearer {secret}`. */
   auth?: { header: string; format: string };
   /** Path prefix under baseUrl. Default `/privacy`. */
@@ -110,6 +117,9 @@ export const CONFORMANCE_RULES: ReadonlyArray<{ id: string; title: string }> = [
 /** Asked for, not assumed: only with `testSubjectEmail`, so a run without one still reads as the 15 rules every receiver is held to. */
 const TEST_SUBJECT_RULE = { id: 'lookup.test_subject.found', title: 'A real test subject of yours (testSubjectEmail) is found: this rule alone reaches your own store through createRightsHandlers, which answers the canary itself.' };
 
+/** Asked for by name: only with `eraseSubjectEmail`, because it really erases that subject. */
+const ERASE_RULE = { id: 'requests.erase.removes_subject', title: 'A real erasure of your throwaway subject (eraseSubjectEmail) finishes, and a lookup no longer finds them: this rule alone runs your own erase code.' };
+
 type Answer = { status: number; json: unknown; version: string | null; error?: string };
 
 function randomTag(): string {
@@ -138,6 +148,7 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(url.hostname))) {
     throw new Error('baseUrl must be https (http only for localhost)');
   }
+  if (o.eraseSubjectEmail && [o.canaryEmail, o.testSubjectEmail].includes(o.eraseSubjectEmail)) throw new Error('eraseSubjectEmail must be its own throwaway subject, not the canary or testSubjectEmail');
   const identity = canaryIdentityFor(o.canaryEmail);
   const canaryEmail = o.canaryEmail.trim().toLowerCase();
   const auth = o.auth ?? { header: 'Authorization', format: 'Bearer {secret}' };
@@ -146,7 +157,7 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   let version: string | undefined;
 
   const set = (id: string, status: ConformanceStatus, detail?: string): void => {
-    const rule = [...CONFORMANCE_RULES, TEST_SUBJECT_RULE].find((r) => r.id === id)!;
+    const rule = [...CONFORMANCE_RULES, TEST_SUBJECT_RULE, ERASE_RULE].find((r) => r.id === id)!;
     results.set(id, { id, title: rule.title, status, ...(detail ? { detail } : {}) });
   };
   const pass = (id: string) => set(id, 'pass');
@@ -302,13 +313,38 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   if (unknown.status === 404) pass('requests.unknown.404');
   else fail('requests.unknown.404', said(unknown));
 
+  if (o.eraseSubjectEmail) await eraseRule(o.eraseSubjectEmail);
+
   if (version) pass('version.header');
   else fail('version.header', 'no answer carried an X-Version header');
 
   return report();
 
+  async function eraseRule(email: string): Promise<void> {
+    const rule = ERASE_RULE.id;
+    const before = await call('POST', '/lookup', { emails: [email] }, { 'Idempotency-Key': key('erase-lookup') });
+    const subject = field(before.json, 'subjectId');
+    if (before.status !== 200 || field(before.json, 'status') !== 'found' || typeof subject !== 'string') {
+      return fail(rule, `${email} must exist before the run, so seed it each time: ${said(before)}`);
+    }
+    const opened = await call('POST', '/requests', { subjectId: subject, type: 'deletion', caseId: `conformance-erase-${run}`, reason: 'Cookie Munch conformance check (throwaway subject)' }, { 'Idempotency-Key': key('erase') });
+    const id = field(opened.json, 'id');
+    if ((opened.status !== 200 && opened.status !== 201) || typeof id !== 'string') return fail(rule, `the erasure was not accepted: ${said(opened)}`);
+    let st = field(opened.json, 'status');
+    const deadline = Date.now() + (o.eraseTimeoutMs ?? 30_000);
+    while ((st === 'pending' || st === 'processing') && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 500));
+      st = field((await call('GET', `/requests/${encodeURIComponent(id)}`, undefined, { 'Idempotency-Key': key('erase-get') })).json, 'status');
+    }
+    if (st !== 'completed' && st !== 'completed_with_retention') return fail(rule, `the erasure ended as "${String(st)}", not completed`);
+    const gone = await call('POST', '/lookup', { emails: [email] }, { 'Idempotency-Key': key('erase-after') });
+    // A retention is a declared exception: the contract lets that subject remain.
+    if (gone.status === 200 && (field(gone.json, 'status') === 'no_match' || st === 'completed_with_retention')) pass(rule);
+    else fail(rule, `the erasure said "${String(st)}", but a lookup afterwards: ${said(gone)}`);
+  }
+
   function report(): ConformanceReport {
-    const rules = [...CONFORMANCE_RULES, ...(o.testSubjectEmail ? [TEST_SUBJECT_RULE] : [])].map((r) => results.get(r.id) ?? { id: r.id, title: r.title, status: 'skip' as const, detail: 'not reached' });
+    const rules = [...CONFORMANCE_RULES, ...(o.testSubjectEmail ? [TEST_SUBJECT_RULE] : []), ...(o.eraseSubjectEmail ? [ERASE_RULE] : [])].map((r) => results.get(r.id) ?? { id: r.id, title: r.title, status: 'skip' as const, detail: 'not reached' });
     const count = (s: ConformanceStatus) => rules.filter((r) => r.status === s).length;
     return { ok: count('fail') === 0, passed: count('pass'), failed: count('fail'), skipped: count('skip'), blocked: count('blocked'), rules, ...(version ? { version } : {}) };
   }
