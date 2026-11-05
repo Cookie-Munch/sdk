@@ -61,6 +61,8 @@ export interface ConformanceOptions {
    * (`GET /v1/dsar/executors/presets` → `canaryEmail`).
    */
   canaryEmail: string;
+  /** A subject you seeded in your own store. It is only looked up, never erased. Without it, `lookup.test_subject.found` is skipped. */
+  testSubjectEmail?: string;
   /** How the secret is sent. Default `Authorization: Bearer {secret}`. */
   auth?: { header: string; format: string };
   /** Path prefix under baseUrl. Default `/privacy`. */
@@ -105,6 +107,9 @@ export const CONFORMANCE_RULES: ReadonlyArray<{ id: string; title: string }> = [
   { id: 'version.header', title: 'Answers carry X-Version (the highest contract version the executor supports).' },
 ];
 
+/** Asked for, not assumed: only with `testSubjectEmail`, so a run without one still reads as the 15 rules every receiver is held to. */
+const TEST_SUBJECT_RULE = { id: 'lookup.test_subject.found', title: 'A real test subject of yours (testSubjectEmail) is found: this rule alone reaches your own store through createRightsHandlers, which answers the canary itself.' };
+
 type Answer = { status: number; json: unknown; version: string | null; error?: string };
 
 function randomTag(): string {
@@ -141,7 +146,7 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   let version: string | undefined;
 
   const set = (id: string, status: ConformanceStatus, detail?: string): void => {
-    const rule = CONFORMANCE_RULES.find((r) => r.id === id)!;
+    const rule = [...CONFORMANCE_RULES, TEST_SUBJECT_RULE].find((r) => r.id === id)!;
     results.set(id, { id, title: rule.title, status, ...(detail ? { detail } : {}) });
   };
   const pass = (id: string) => set(id, 'pass');
@@ -190,7 +195,9 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   // lookups
   const byEmail = await call('POST', '/lookup', { emails: [canaryEmail] }, { 'Idempotency-Key': key('lookup-email') });
   // The key itself is refused: every later rule would fail for this one reason, so it is the only failure.
-  if (byEmail.status === 401 || byEmail.status === 403) {
+  // A 404 with no X-Version is how createRightsHandlers answers a wrong secret: it does not admit the API exists.
+  const hidden = byEmail.status === 404 && !byEmail.version;
+  if (byEmail.status === 401 || byEmail.status === 403 || hidden) {
     fail('lookup.email.found', `the canary address: ${said(byEmail)}`);
     for (const r of CONFORMANCE_RULES) if (!results.has(r.id)) results.set(r.id, { id: r.id, title: r.title, status: 'blocked', blockedBy: 'lookup.email.found' });
     const code = byEmail.status === 403 ? 'missing_scope' as const : 'credential_refused' as const;
@@ -199,18 +206,28 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
     const hint = o.keyHint ? ` ${o.keyHint}` : '';
     const fix = code === 'missing_scope'
       ? `This key may not call the rights API (HTTP 403).${required.length ? ` It needs ${required.join(' or ')}.` : ' Give it the rights scope that system documents.'}${hint}`
-      : `This key was refused (HTTP 401): it is wrong, expired or revoked. Send a current one.${hint}`;
+      : hidden
+        ? `No rights API answered this key (HTTP 404, no X-Version). createRightsHandlers answers a wrong secret this way, so check the secret first, then the base URL.${hint}`
+        : `This key was refused (HTTP 401): it is wrong, expired or revoked. Send a current one.${hint}`;
     return { ...report(), code, ...(code === 'missing_scope' && required.length ? { required } : {}), fix };
   }
   const subjectId = field(byEmail.json, 'subjectId');
   if (byEmail.status === 200 && field(byEmail.json, 'status') === 'found' && typeof subjectId === 'string' && subjectId) pass('lookup.email.found');
   else fail('lookup.email.found', `the canary address: ${said(byEmail)}`);
 
+  if (o.testSubjectEmail) {
+    const seeded = await call('POST', '/lookup', { emails: [o.testSubjectEmail] }, { 'Idempotency-Key': key('lookup-seeded') });
+    if (seeded.status === 200 && field(seeded.json, 'status') === 'found') pass('lookup.test_subject.found');
+    else fail('lookup.test_subject.found', `${o.testSubjectEmail}: ${said(seeded)}`);
+  }
+
+  // A receiver that takes the two names as alternatives refuses the body every real request is sent in.
+  const bothNames = (a: Answer) => (a.status === 400 ? ' A body carries `identity` and `atlas` together, identical, and `emails` can be empty: accept all of that (see the v2 contract).' : '');
   const byIdentity = await call('POST', '/lookup', { emails: [], identity: identity, atlas: identity }, { 'Idempotency-Key': key('lookup-identity') });
   if (byIdentity.status === 200 && field(byIdentity.json, 'status') === 'found' && field(byIdentity.json, 'subjectId') === subjectId && typeof subjectId === 'string') {
     pass('lookup.identity.found');
   } else {
-    fail('lookup.identity.found', `the canary identity ${identity.sub}: ${said(byIdentity)}${typeof subjectId === 'string' ? ` (by email it was ${subjectId})` : ''}`);
+    fail('lookup.identity.found', `the canary identity ${identity.sub}: ${said(byIdentity)}${typeof subjectId === 'string' ? ` (by email it was ${subjectId})` : ''}${bothNames(byIdentity)}`);
   }
 
   const nobody = await call('POST', '/lookup', { emails: [`nobody-${run}@canary.cookiemunch.net`] }, { 'Idempotency-Key': key('lookup-nobody') });
@@ -223,7 +240,7 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   else {
     fail(
       'lookup.identity_beats_email',
-      `an identity nobody has (${stranger.sub}) with the canary's email: ${said(crossed)} — the email belongs to a different identity, so this must be no_match`,
+      `an identity nobody has (${stranger.sub}) with the canary's email: ${said(crossed)} — the email belongs to a different identity, so this must be no_match${bothNames(crossed)}`,
     );
   }
 
@@ -291,7 +308,7 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   return report();
 
   function report(): ConformanceReport {
-    const rules = CONFORMANCE_RULES.map((r) => results.get(r.id) ?? { id: r.id, title: r.title, status: 'skip' as const, detail: 'not reached' });
+    const rules = [...CONFORMANCE_RULES, ...(o.testSubjectEmail ? [TEST_SUBJECT_RULE] : [])].map((r) => results.get(r.id) ?? { id: r.id, title: r.title, status: 'skip' as const, detail: 'not reached' });
     const count = (s: ConformanceStatus) => rules.filter((r) => r.status === s).length;
     return { ok: count('fail') === 0, passed: count('pass'), failed: count('fail'), skipped: count('skip'), blocked: count('blocked'), rules, ...(version ? { version } : {}) };
   }

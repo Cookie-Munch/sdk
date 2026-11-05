@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.19.0';
+export const SDK_VERSION = '0.20.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -3266,9 +3266,11 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       let code: string | undefined;
       let parsed: unknown;
       try {
-        const data = (await res.json()) as { error?: string; code?: string };
+        const data = (await res.json()) as { error?: string; message?: string; code?: string };
         parsed = data;
-        if (typeof data.error === 'string') message = data.error;
+        // `error` can be a bare code (`insufficient_scope`), with the sentence in `message`.
+        if (typeof data.message === 'string') message = data.message;
+        else if (typeof data.error === 'string') message = data.error;
         if (typeof data.code === 'string') code = data.code;
       } catch {
         /* non-JSON error body — keep the default message */

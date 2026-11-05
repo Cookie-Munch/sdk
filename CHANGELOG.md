@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.20.0
+
+- API errors carry the server's `message` when it sends one, with `code` kept.
+- `testSubjectEmail` on `runExecutorConformance`, and rule `lookup.test_subject.found`. A 404 with no `X-Version` on the keyed lookup is one failure with a `fix`. Identity rows that answer 400 name the rule about `identity` and `atlas`.
+
 ## 0.19.0
 
 - The conformance kit stops at a refused key: `code`, `required`, `fix`, `blocked`, and rules with `status: "blocked"` and `blockedBy`.
