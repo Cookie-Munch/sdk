@@ -327,7 +327,8 @@ describe('createRightsHandlers completion', () => {
   const flush = () => new Promise((r) => setTimeout(r, 0));
   // Web Crypto settles off the microtask queue, so step fake time until the condition holds.
   async function stepUntil(done: () => boolean) {
-    for (let i = 0; i < 200 && !done(); i++) {
+    // By the clock, not a count of ticks: signing runs on a thread pool, which a loaded runner can leave behind 200 ticks.
+    for (const end = Date.now() + 4_000; !done() && Date.now() < end; ) {
       await new Promise((r) => setImmediate(r));
       await vi.advanceTimersByTimeAsync(500);
     }
