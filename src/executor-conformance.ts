@@ -148,7 +148,11 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(url.hostname))) {
     throw new Error('baseUrl must be https (http only for localhost)');
   }
-  if (o.eraseSubjectEmail && [o.canaryEmail, o.testSubjectEmail].includes(o.eraseSubjectEmail)) throw new Error('eraseSubjectEmail must be its own throwaway subject, not the canary or testSubjectEmail');
+  for (const [name, v] of [['testSubjectEmail', o.testSubjectEmail], ['eraseSubjectEmail', o.eraseSubjectEmail]] as const) {
+    if (v !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) throw new Error(`${name} must be an email address, not "${v}"`);
+  }
+  const lower = (x: string | undefined) => x?.trim().toLowerCase();
+  if (o.eraseSubjectEmail && [lower(o.canaryEmail), lower(o.testSubjectEmail)].includes(lower(o.eraseSubjectEmail))) throw new Error('eraseSubjectEmail must be its own throwaway subject, not the canary or testSubjectEmail');
   const identity = canaryIdentityFor(o.canaryEmail);
   const canaryEmail = o.canaryEmail.trim().toLowerCase();
   const auth = o.auth ?? { header: 'Authorization', format: 'Bearer {secret}' };

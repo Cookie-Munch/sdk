@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.21.1 (2026-11-05)
+
+- Fixed: conformance refuses a `testSubjectEmail` or `eraseSubjectEmail` that isn't an email address, and compares subjects without regard to case.
+
 ## 0.21.0 (2026-11-05)
 
 - Added: eraseSubjectEmail on runExecutorConformance: requests.erase.removes_subject really erases that throwaway subject through the receiver's erase code, then checks a lookup no longer finds it.
