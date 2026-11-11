@@ -28,7 +28,12 @@
  */
 import { CANARY_ISSUER } from './executor-conformance.js';
 
-export type RightsType = 'access' | 'deletion' | 'closure' | 'restriction' | 'rectification';
+/**
+ * The six rights, one word each. Every word Cookie Munch has sent is read as one of them: `deletion`,
+ * `erase` → `erasure`; `export` → `access`. A portability request is `portability` (its callback falls
+ * back to `access` when there is no `portability`).
+ */
+export type RightsType = 'access' | 'erasure' | 'rectification' | 'portability' | 'restriction' | 'closure';
 export type RightsStatus = 'pending' | 'scheduled' | 'processing' | 'completed' | 'completed_with_retention' | 'no_match' | 'rejected' | 'cancelled';
 
 export interface RightsIdentity {
@@ -66,7 +71,7 @@ export interface RightsRequest {
   id: string;
   subjectId: string;
   type: RightsType;
-  /** The word Cookie Munch sent (`erasure`, `export`, …). */
+  /** The word Cookie Munch sent: its `right` (one of the RightsType words) when present, else its `type`. */
   requestedType: string;
   caseId: string;
   reason?: string;
@@ -98,11 +103,13 @@ export interface RightsHandlersOptions {
   /** The subject id for these emails / this identity, or null. */
   lookup: (input: RightsLookupInput) => Promise<string | null | undefined> | string | null | undefined;
   access?: Callback;
+  /** `portability`: the person's data in a machine-readable form. Without it, `access` answers it. */
+  portability?: Callback;
   /**
-   * `deletion` (and `closure`, when there is no `close`). With a future `executeAfter` the request is
-   * stored as `scheduled` and there is NO timer in your process: `erase` runs inside the first
-   * `GET /requests/{id}` at or after `executeAfter`, which is Cookie Munch's next poll (its sweep runs
-   * every 10 minutes). So the state must survive a restart: give production a durable `store`.
+   * `erasure` (and `closure`, when there is no `close`). With a future `executeAfter` the request is
+   * stored as `scheduled` and there is NO timer in your process: `erase` runs when Cookie Munch sends
+   * `POST /requests/{id}/run` at or after `executeAfter` (its sweep runs every 10 minutes). A `GET` never
+   * runs it. The state must survive a restart: give production a durable `store`.
    */
   erase?: Callback;
   close?: Callback;
@@ -118,9 +125,9 @@ export interface RightsHandlersOptions {
   store?: RightsStore;
   now?: () => number;
   /**
-   * Signed completions (cm-standard-v2): the connection's `completionsUrl` and its `completionSecret`
-   * (`whsec_…`, shown once when the connection is created or the secret rolled; the connection's
-   * `webhookSecret` verifies too). Each request that reaches a final status is POSTed there, signed,
+   * Signed completions (cm-standard-v2): the connection's `completionUrl` and its `completionSecret`
+   * (`whsec_…`; read it again with `fulfillment.getExecutorCompletionSecret(id)`). Profile-based
+   * systems use `webhookUrl` + `webhookSecret` instead; a `webhookSecret` also verifies here. Each request that reaches a final status is POSTed there, signed,
    * with up to 3 attempts. A failed push never fails a request: Cookie Munch's poll still closes it.
    */
   completion?: { url: string; secret: string; fetch?: typeof fetch };
@@ -141,9 +148,14 @@ export interface RightsHandlers {
 }
 
 const CANONICAL: Record<string, RightsType> = {
-  access: 'access', export: 'access', deletion: 'deletion', erase: 'deletion', erasure: 'deletion',
+  access: 'access', export: 'access', portability: 'portability', erasure: 'erasure', deletion: 'erasure', erase: 'erasure',
   closure: 'closure', restriction: 'restriction', rectification: 'rectification',
 };
+/** The contract's `canonicalType` on the wire (executor-contract-v2), which predates the six words. */
+const WIRE: Record<RightsType, string> = {
+  access: 'access', portability: 'access', erasure: 'deletion', closure: 'closure', restriction: 'restriction', rectification: 'rectification',
+};
+const TYPE_WORDS = 'access, export, portability, erasure, deletion, erase, closure, restriction, rectification';
 const OUTCOMES = new Set(['pending', 'processing', 'completed', 'completed_with_retention', 'no_match', 'rejected']);
 /** The contract's final statuses: each one is pushed as a signed completion. */
 const FINAL = new Set<RightsStatus>(['completed', 'completed_with_retention', 'no_match', 'rejected', 'cancelled']);
@@ -211,7 +223,7 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   const hmacKey = subtle.importKey('raw', enc.encode(o.idSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
   const completion = o.completion;
   if (completion && (typeof completion.url !== 'string' || !/^https?:\/\//.test(completion.url) || typeof completion.secret !== 'string' || !completion.secret)) {
-    throw new Error('createRightsHandlers: completion needs { url, secret }: the connection\'s completionsUrl and completionSecret');
+    throw new Error('createRightsHandlers: completion needs { url, secret }: the connection\'s completionUrl and completionSecret');
   }
   // Standard Webhooks: a `whsec_` secret's HMAC key is its base64-decoded remainder; anything else signs as typed.
   const completionKey = completion
@@ -230,7 +242,10 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     if (!sigBytes || !(await subtle.verify('HMAC', await hmacKey, sigBytes, enc.encode(payload)))) return null;
     const raw = fromB64url(payload);
     try {
-      return raw ? (JSON.parse(dec.decode(raw)) as IdClaims) : null;
+      if (!raw) return null;
+      const c = JSON.parse(dec.decode(raw)) as IdClaims;
+      // An id minted before the six words carries `deletion`.
+      return { ...c, t: CANONICAL[c.t] ?? c.t };
     } catch {
       return null;
     }
@@ -247,7 +262,7 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   const view = (id: string, c: IdClaims, s: Stored) => ({
     id,
     type: c.y,
-    canonicalType: c.t,
+    canonicalType: WIRE[c.t] ?? c.t,
     status: s.status,
     ...(s.eta ? { eta: s.eta } : {}),
     ...(s.detail ? { detail: s.detail } : {}),
@@ -296,7 +311,7 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   }
 
   const callbackFor = (t: RightsType): Callback | undefined =>
-    ({ access: o.access, deletion: o.erase, closure: o.close ?? o.erase, restriction: o.restrict, rectification: o.rectify })[t];
+    ({ access: o.access, portability: o.portability ?? o.access, erasure: o.erase, closure: o.close ?? o.erase, restriction: o.restrict, rectification: o.rectify })[t];
 
   /** Run a callback (or, for the canary, nothing) and fold its answer into the stored state. */
   async function act(id: string, c: IdClaims, s: Stored, cb: Callback | undefined): Promise<Stored> {
@@ -350,8 +365,10 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   }
 
   async function open(body: Record<string, unknown>): Promise<Response> {
-    const t = typeof body.type === 'string' ? CANONICAL[body.type] : undefined;
-    if (!t) return bad('type must be one of access, export, deletion, erase, erasure, closure, restriction, rectification', 'type');
+    // `right` names the right itself (portability, which `type` sends as access); a receiver that predates it reads `type`.
+    const word = typeof body.right === 'string' && CANONICAL[body.right] ? body.right : body.type;
+    const t = typeof word === 'string' ? CANONICAL[word] : undefined;
+    if (!t) return bad(`type must be one of ${TYPE_WORDS}`, 'type');
     if (typeof body.subjectId !== 'string' || !body.subjectId) return bad('subjectId is required', 'subjectId');
     if (typeof body.caseId !== 'string' || !body.caseId) return bad('caseId is required', 'caseId');
     if (body.reason !== undefined && typeof body.reason !== 'string') return bad('reason must be a string', 'reason');
@@ -360,11 +377,11 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     const cb = callbackFor(t);
     if (!cb && !CANARY_SUBJECT.test(body.subjectId)) return bad(`this system does not handle ${t}`, 'type');
 
-    const c: IdClaims = { s: body.subjectId, t, y: body.type as string, c: body.caseId, n: b64url(globalThis.crypto.getRandomValues(new Uint8Array(9))) };
+    const c: IdClaims = { s: body.subjectId, t, y: word as string, c: body.caseId, n: b64url(globalThis.crypto.getRandomValues(new Uint8Array(9))) };
     if (!Number.isNaN(after)) c.a = after;
     const id = await mintId(c);
     const s: Stored = { status: 'pending', ...(typeof body.reason === 'string' && body.reason ? { reason: body.reason } : {}) };
-    const erasing = t === 'deletion' || t === 'closure';
+    const erasing = t === 'erasure' || t === 'closure';
     if (erasing && c.a !== undefined && c.a > now()) {
       const scheduled: Stored = { ...s, status: 'scheduled', eta: new Date(c.a).toISOString() };
       await putStored(id, scheduled);
@@ -379,9 +396,16 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
       // A genuine id whose state is gone (an emptied store): never act on it, say so.
       return json(200, view(id, c, { status: 'rejected', detail: "this system no longer holds the request's state; nothing was done. Open it again." }));
     }
-    if (s.status === 'scheduled' && c.a !== undefined && now() >= c.a) s = await act(id, c, s, callbackFor(c.t));
-    else if ((s.status === 'pending' || s.status === 'processing') && o.status && !CANARY_SUBJECT.test(c.s)) s = await act(id, c, s, o.status);
+    // A scheduled erasure waits for POST /run: a GET is safe, it never acts.
+    if ((s.status === 'pending' || s.status === 'processing') && o.status && !CANARY_SUBJECT.test(c.s)) s = await act(id, c, s, o.status);
     return json(200, view(id, c, s));
+  }
+
+  /** Run a scheduled erasure whose executeAfter has passed; anything else answers as a read. Safe to repeat. */
+  async function run(id: string, c: IdClaims): Promise<Response> {
+    const s = await getStored(id);
+    if (s?.status === 'scheduled' && c.a !== undefined && now() >= c.a) return json(200, view(id, c, await act(id, c, s, callbackFor(c.t))));
+    return read(id, c);
   }
 
   async function cancel(id: string, c: IdClaims): Promise<Response> {
@@ -400,10 +424,10 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     if (!m || !sameKey(m[1]!.trim(), o.key)) return hidden();
 
     const path = new URL(req.url).pathname.replace(/\/+$/, '');
-    const route = /\/(lookup|requests)(?:\/([^/]+)(\/cancel)?)?$/.exec(path);
+    const route = /\/(lookup|requests)(?:\/([^/]+)(?:\/(cancel|run))?)?$/.exec(path);
     const method = req.method.toUpperCase();
     if (!route) return json(404, { error: 'not_found' });
-    const [, what, rawId, isCancel] = route;
+    const [, what, rawId, action] = route;
 
     let body: Record<string, unknown> = {};
     let text = '';
@@ -443,8 +467,9 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
       }
       const c = await readId(id);
       if (!c) return json(404, { error: 'unknown request' });
-      if (isCancel && method === 'POST') res = await cancel(id, c);
-      else if (!isCancel && method === 'GET') res = await read(id, c);
+      if (action === 'cancel' && method === 'POST') res = await cancel(id, c);
+      else if (action === 'run' && method === 'POST') res = await run(id, c);
+      else if (!action && method === 'GET') res = await read(id, c);
       else return json(404, { error: 'not_found' });
     } else return json(404, { error: 'not_found' });
 
@@ -523,24 +548,51 @@ export function fileStore(dir: string): DurableStore {
   };
 }
 
-/** The table `sqlStore` uses (Postgres). Run it once, in a migration. */
+/** The table `sqlStore` uses (Postgres). Run it once, in a migration. For SQLite: `RIGHTS_STORE_TABLE_SQLITE`. */
 export const RIGHTS_STORE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS cookiemunch_rights_store (
   key text PRIMARY KEY,
   value text NOT NULL,
   expires_at timestamptz
 )`;
 
+/** The same table for SQLite (`sqlStore({ dialect: 'sqlite' })`): `expires_at` is epoch milliseconds. */
+export const RIGHTS_STORE_TABLE_SQLITE = `CREATE TABLE IF NOT EXISTS cookiemunch_rights_store (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  expires_at INTEGER
+)`;
+
 /**
- * A store over one SQL table (`RIGHTS_STORE_TABLE_SQL`, Postgres-flavoured). `query(sql, params)` runs a
- * parameterised statement and answers `{ rows }` or the rows: `pool.query` from `pg` as it is, or a
- * wrapper over your ORM's raw query. An expired row reads as missing; expired rows are purged by the
- * next write that carries a TTL.
+ * A store over one SQL table (`RIGHTS_STORE_TABLE_SQL`, or `RIGHTS_STORE_TABLE_SQLITE` with
+ * `dialect: 'sqlite'`). `query(sql, params)` runs a parameterised statement and answers `{ rows }` or the
+ * rows: `pool.query` from `pg` as it is; for better-sqlite3 (and Drizzle's `db.$client`),
+ * `(sql, p) => { const s = db.prepare(sql); return Promise.resolve(s.reader ? s.all(...p) : (s.run(...p), [])); }`.
+ * An expired row reads as missing; expired rows are purged by the next write that carries a TTL.
  */
-export function sqlStore(o: { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] } | unknown[]> }): DurableStore {
+export function sqlStore(o: { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] } | unknown[]>; dialect?: 'postgres' | 'sqlite' }): DurableStore {
   const rows = async (sql: string, params: unknown[]) => {
     const r = await o.query(sql, params);
     return (Array.isArray(r) ? r : r.rows) as Array<{ value?: string }>;
   };
+  if (o.dialect === 'sqlite') {
+    return {
+      async get(key) {
+        return (await rows('SELECT value FROM cookiemunch_rights_store WHERE key = ? AND (expires_at IS NULL OR expires_at > ?)', [key, Date.now()]))[0]?.value ?? null;
+      },
+      async set(key, value, opts) {
+        const exp = opts?.ttlSeconds ? Date.now() + opts.ttlSeconds * 1000 : null;
+        await rows(
+          'INSERT INTO cookiemunch_rights_store (key, value, expires_at) VALUES (?, ?, ?) '
+            + 'ON CONFLICT (key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at',
+          [key, value, exp],
+        );
+        if (exp !== null) await rows('DELETE FROM cookiemunch_rights_store WHERE expires_at <= ?', [Date.now()]);
+      },
+      async delete(key) {
+        await rows('DELETE FROM cookiemunch_rights_store WHERE key = ?', [key]);
+      },
+    };
+  }
   return {
     async get(key) {
       return (await rows('SELECT value FROM cookiemunch_rights_store WHERE key = $1 AND (expires_at IS NULL OR expires_at > now())', [key]))[0]?.value ?? null;

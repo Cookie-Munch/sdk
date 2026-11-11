@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.21.1';
+export const SDK_VERSION = '0.22.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -75,11 +75,16 @@ export interface CookieMunchOptions {
    * declare is refused (`400 unknown_field`, with `field`) instead of ignored. Catches typos.
    */
   strictUnknownFields?: boolean;
-  /** The `User-Agent` sent on every request. Default `cookiemunch-js/<version>`. */
+  /**
+   * The `User-Agent` sent on every request. Default `cookiemunch-js/<version>`. Without `apiVersion`, a request whose
+   * User-Agent starts `cookiemunch-` is served no later than API version 2026-10-24, the shapes this SDK's types
+   * describe; another User-Agent is served as the key is pinned.
+   */
   userAgent?: string;
   /**
    * Serve every request under this dated API version (`CookieMunch-Version`, e.g. `'2026-10-24'`) instead of the
-   * one your key is pinned to. `versions()` lists them; `keys.updateSelf({ apiVersion })` re-pins the key.
+   * one your key is pinned to. `versions()` lists them; `keys.updateSelf({ apiVersion })` re-pins the key. Lists are
+   * unwrapped under any version; from 2026-11-11, `consent.stats` rows are camelCase and partner links snake_case.
    */
   apiVersion?: string;
   /**
@@ -94,7 +99,7 @@ export interface CookieMunchOptions {
   headers?: Record<string, string>;
 }
 
-/** Tags on a created resource (CMU-X29). `stack_sandbox: true` can only be set at creation. */
+/** Tags on a created resource. `stack_sandbox: true` can only be set at creation. */
 export type ResourceMetadata = Record<string, string | number | boolean>;
 /** Keep only resources whose tags match, e.g. `{ stack_product: 'referalli' }`. */
 export interface MetadataFilter { metadata?: Record<string, string> }
@@ -109,7 +114,7 @@ export interface ResourceTags { type: TaggedType; id: string; metadata: Resource
 export interface ResourceTagsUpdate { dryRun?: true; type: TaggedType; id: string; metadata: ResourceMetadata; diff: Array<{ field: string; before: unknown; after: unknown }> }
 /** What a sandbox hard delete removed. */
 export interface SandboxPurge { deleted: true; cbid?: string; orgId?: string; counts: Record<string, number> }
-/** A partner link in the suite-standard shape (CMU-X34). */
+/** A partner link in the suite-standard shape. */
 export interface StandardPartnerLink {
   id: string;
   partner: string;
@@ -218,6 +223,8 @@ export interface CategorizedCookie {
    * `not_seen_recently` = unseen for the site's `staleAfterDays`, owner views only.
    */
   review?: 'unclassified' | 'category_disabled' | 'category_unknown' | 'retired_but_seen' | 'awaiting_corroboration' | 'suspicious_report' | 'foreign_cmp' | 'not_seen_recently';
+  /** Owner views only, on a `suspicious_report` row: the introducing report's new names and vendors. */
+  suspiciousReport?: { names: number; vendors: number };
   /** Epoch-ms a crawl or a real visit last saw it. Absent on older rows. */
   lastSeenAt?: number;
   /** Owner views only: the site owner retired this cookie (see `sites.retireCookie`). */
@@ -343,7 +350,7 @@ export interface ConfigTranslateResult {
 }
 
 /** A platform whose cookies and storage a preset declares. */
-export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch' | 'referalli' | 'firstpromoter' | 'partnerstack' | 'tapfiliate' | 'impact' | 'seolyticize'
+export type CookiePresetVendor = 'atlas' | 'forumulate' | 'chatly' | 'cookiemunch' | 'referalli' | 'firstpromoter' | 'partnerstack' | 'tapfiliate' | 'impact' | 'seolyticize' | 'lucida' | 'hermetica' | 'watchtower'
   /** @deprecated the old name of `referalli`, accepted until 2027-10-23. */
   | 'referally';
 
@@ -411,7 +418,7 @@ export interface CookieSuggestionsDeclared {
   diff?: DeclarationDiff;
 }
 
-/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`/`publishableKey`; Chatly `publicId`/`dragging`/`storage`/`tracking`/`category`; referral and affiliate presets (referalli, firstpromoter, partnerstack, tapfiliate, impact) `cookieDomain`/`cookieDays`/`category`, referalli `legacyName`/`programHandle`, impact `campaignId`. */
+/** Preset parameters: Atlas `frontendApiHost`/`crossSubdomainCookies`/`publishableKey`; Chatly `publicId`/`dragging`/`storage`/`tracking`/`category`; referral and affiliate presets (referalli, firstpromoter, partnerstack, tapfiliate, impact) `cookieDomain`/`cookieDays`/`category`, referalli `legacyName`/`programHandle`, impact `campaignId`; lucida `publicKey`/`cookieDomain`/`category`; hermetica `storage`/`category`; watchtower `category`. */
 export interface CookiePresetParams {
   frontendApiHost?: string;
   crossSubdomainCookies?: boolean;
@@ -419,8 +426,8 @@ export interface CookiePresetParams {
   publishableKey?: string;
   publicId?: string;
   dragging?: boolean;
-  /** Chatly: the widget's own storage option, as passed to Chatly.init; analytics 'deny' leaves chatly:seen out, marketing 'deny' chatly:utm. */
-  storage?: 'allow' | 'deny' | 'on-open' | { functional?: 'allow' | 'deny' | 'on-open'; analytics?: 'allow' | 'deny' | 'on-open'; marketing?: 'allow' | 'deny' | 'on-open' };
+  /** Chatly: the widget's own storage option, as passed to Chatly.init; analytics 'deny' leaves chatly:seen out, marketing 'deny' chatly:utm. Hermetica: 'localStorage' (default) or 'cookie'. */
+  storage?: 'allow' | 'deny' | 'on-open' | 'localStorage' | 'cookie' | { functional?: 'allow' | 'deny' | 'on-open'; analytics?: 'allow' | 'deny' | 'on-open'; marketing?: 'allow' | 'deny' | 'on-open' };
   /** Chatly: the widget's own tracking option; false, or visits false, leaves chatly:seen out. */
   tracking?: boolean | { visits?: boolean; exitIntent?: boolean; scrollDepth?: boolean };
   category?: string;
@@ -434,6 +441,8 @@ export interface CookiePresetParams {
   orgToken?: string;
   /** impact: your program id; declares IR_<campaignId> too. */
   campaignId?: string;
+  /** lucida: your public project key; the rows are then exact names ending in its last 8 word characters (else prefix patterns). */
+  publicKey?: string;
 }
 
 /** One browser key a surface writes, in an embed manifest. */
@@ -607,6 +616,10 @@ export interface ScanStatus {
   finalUrl?: string;
   /** Why it failed. */
   error?: string;
+  /** Once done: cookies the scan saw (or a visit since) that no declaration covers. Reporting only. */
+  undeclared?: Array<{ name: string; domain?: string; category: string }>;
+  /** Once done: declarations the scan did not see and nothing has seen for `staleAfterDays`. Reporting only. */
+  stale?: Array<{ name: string; lastSeenAt: number | null }>;
 }
 
 /** Consent-button parity of the banner a real browser saw on the site (see ScanStatus). */
@@ -662,6 +675,10 @@ export interface InstallSnippet {
   blockingMode: string;
   /** Where `blockingMode` came from: the site's config, or the `blockingMode` option. */
   blockingModeSource?: 'config' | 'query';
+  /** The site's `embedChannel`: `stable`, or `pinned:<version>` (then `src` is that release's immutable URL). */
+  channel?: string;
+  /** Pinned releases only: the loader's `sha384-` hash, also on the tag with `crossorigin="anonymous"`. */
+  integrity?: string;
   /** The tag's data-culture, when it has one. */
   culture?: string;
   /** CSP sources this site needs, by directive, plus a paste-able `policy`. */
@@ -1363,7 +1380,7 @@ export interface Org {
   logoUrl: string | null;
 }
 
-export type MailProviderKind = 'brevo' | 'sendgrid' | 'postmark' | 'resend' | 'ses' | 'smtp';
+export type MailProviderKind = 'brevo' | 'sendgrid' | 'postmark' | 'resend' | 'ses' | 'smtp' | 'hermetica';
 
 /**
  * The org's own mail provider for rights-request mail. The credential is never returned —
@@ -1473,6 +1490,18 @@ export type RightsIdentityType = 'clerk' | 'atlas' | 'oidc_jwt';
  * The sign-in provider rights requests are verified with: a visitor signed in to your site is
  * verified by their session, with no code mail. Nothing here is secret.
  */
+/** What the rights intake would make of one session token (`rightsIdentity.check`). The email is never echoed. */
+export interface RightsIdentityCheck {
+  verified: boolean;
+  reason?: 'not_configured' | 'unavailable' | 'invalid' | 'no_email' | 'email_unverified';
+  /** For `invalid`: which JWT check failed. */
+  jwt?: 'malformed' | 'alg' | 'no_key' | 'signature' | 'expired' | 'claims' | 'azp';
+  detail: string;
+  /** The claim names the token carries (never their values). */
+  claims?: string[];
+  provider?: 'clerk' | 'atlas' | 'oidc_jwt';
+}
+
 export interface RightsIdentity {
   /** `site`: the site's own setting; `org`: the organisation default; `default`: neither (none). */
   source: 'site' | 'org' | 'default';
@@ -1883,7 +1912,7 @@ export interface ChildKeyInput {
 }
 
 export interface PolicyOptions {
-  /** Contact email shown in the policy. Falls back to the org controller's, then the owner's. */
+  /** Contact email the policy publishes. Falls back to the controller's (org, else site config); with none the API answers 422 `contact_email_required`. */
   contactEmail?: string;
   /** YYYY-MM-DD. Defaults to today. */
   effectiveDate?: string;
@@ -1893,6 +1922,8 @@ export interface PolicyOptions {
   fragment?: 'cookies';
   /** With `fragment: 'cookies'`: Markdown (default) or escaped HTML tables. */
   format?: 'markdown' | 'html';
+  /** With `fragment: 'cookies'`: `review` lists the owner's raw rows (retired and quarantined too), for checking, not publishing. */
+  include?: 'review';
   /** The text's language; the policy is written in English only (`en`). */
   lang?: string;
 }
@@ -2027,7 +2058,9 @@ export interface DsarExecutor {
   completionSecretPrefix?: string;
   /** When a signed completion last verified; running work is then polled every 6 hours. */
   lastSignedCompletionAt?: number | null;
-  /** Where signed cm-standard-v2 completions go. */
+  /** Where signed cm-standard-v2 completions go, signed with `completionSecret` (not `webhookUrl`, which profile-based systems use). */
+  completionUrl?: string;
+  /** The same URL as `completionUrl`, under its earlier name. */
   completionsUrl?: string;
   /** True: its erasures wait (status `awaiting_approval`) for `approveTask` or `rejectTask`. */
   requireApproval?: boolean;
@@ -2043,12 +2076,22 @@ export interface DsarExecutor {
   completionSecret?: string;
 }
 
+/** GET …/completion-secret: the current secret again (dsar:write, audited). */
+export interface CompletionSecret {
+  id: string;
+  completionSecret: string;
+  completionSecretPrefix: string;
+  completionUrl: string;
+  completionsUrl?: string;
+}
+
 /** POST …/completion-secret/roll. */
 export interface CompletionSecretRolled {
   id: string;
   completionSecret: string;
   completionSecretPrefix: string;
   previousRetiresAt: string | null;
+  completionUrl?: string;
   completionsUrl?: string;
 }
 
@@ -2110,6 +2153,12 @@ export interface DsarExecutorPresetInput {
   orchestrator?: 1 | 2;
   /** Park its erasures for a person's approval. Default false. */
   requireApproval?: boolean;
+  /**
+   * Any of the preset's params by name, as `executorPresets()` lists them: `{ programId }` for referalli
+   * (one program of a shared organisation), `{ projectId }` for lucida, `{ scopeName, scopeId }` for
+   * cm-standard-v2. A name the preset does not list is a 400 naming `params.<name>`.
+   */
+  params?: Record<string, string | boolean>;
 }
 
 /** What `upgradeExecutorPreset` takes: a version, a preset to adopt, or params to add. */
@@ -2119,11 +2168,13 @@ export interface ExecutorPresetUpgrade {
   orgId?: string;
   atlasIdAppId?: string;
   revokeAtlasIdGrant?: boolean;
+  /** Any of the preset's params by name (see `DsarExecutorPresetInput.params`). */
+  params?: Record<string, string | boolean>;
   /** Overridden paths (`profileOverrides`) that take the preset's value again; every other override is kept. */
   acceptPreset?: string | string[];
 }
 
-/** One step a preset builds, and whether it can run now (CMU-B01). */
+/** One step a preset builds, and whether it can run now. */
 export interface ExecutorPresetStep {
   name: 'subjectLookup' | 'open' | 'poll' | 'webhook' | 'grantRevoke';
   available: boolean;
@@ -2137,6 +2188,17 @@ export interface ExecutorPresetStep {
 }
 
 /** The presets, which are usable now, and this org's canary address. */
+/** GET /v1/dsar/executors/suggestions: platforms a site runs on that no connected system covers yet. */
+export interface ExecutorSuggestion {
+  cbid: string;
+  preset: ExecutorPresetName;
+  platform: string;
+  /** Which cookie rows and partner link implied it. */
+  reason: string;
+  available: boolean;
+  waitingOn?: { platform: string; items: string[]; operations: string[] };
+}
+
 export interface ExecutorPresets {
   canaryEmail: string;
   /** The same list as `presets`, under the name every list answer uses. */
@@ -2410,13 +2472,13 @@ export interface CookieMunchClient {
     /** Hard-delete a SANDBOX organisation of this account (created with metadata.stack_sandbox). Anything else: 403 not_a_sandbox. */
     deleteSandbox(id: string): Promise<SandboxPurge>;
   };
-  /** Tags on any created resource (CMU-X29). */
+  /** Tags on any created resource. */
   metadata: {
     get(type: TaggedType, id: string): Promise<ResourceTags>;
     /** Merge tags (null removes one). `stack_sandbox` cannot be set here. `{ dryRun: true }` answers with the diff. */
     update(type: TaggedType, id: string, metadata: Record<string, string | number | boolean | null>, opts?: { dryRun?: boolean }): Promise<ResourceTagsUpdate>;
   };
-  /** Partner links in the suite-standard shape (CMU-X34). */
+  /** Partner links in the suite-standard shape. */
   partnerLinks: {
     list(opts?: MetadataFilter): Promise<StandardPartnerLink[]>;
     create(input: StandardPartnerLinkCreate): Promise<StandardPartnerLink>;
@@ -2471,9 +2533,11 @@ export interface CookieMunchClient {
     cookies(cbid: string): Promise<CookieDeclaration>;
     /**
      * Start a cookie crawl. Answers at once with `scanId` and `state: 'queued'`; `wait`
-     * (seconds, ≤60) holds the request until the scan is done or failed.
+     * (seconds, ≤60) holds the request until the scan is done or failed. `cookies` (a Cookie
+     * header value or `[{ name, value }]`, a test account's session) makes it a signed-in crawl:
+     * set only on the site's own hosts, never stored or returned.
      */
-    scan(cbid: string, opts?: { wait?: number }): Promise<ScanStatus>;
+    scan(cbid: string, opts?: { wait?: number; cookies?: string | Array<{ name: string; value: string }> }): Promise<ScanStatus>;
     /** The last scan's state. `wait` (seconds, ≤60) holds the request until a running scan settles. */
     scanStatus(cbid: string, opts?: { wait?: number }): Promise<ScanStatus>;
     /**
@@ -2536,7 +2600,7 @@ export interface CookieMunchClient {
     unretireCookie(cbid: string, name: string): Promise<void>;
     /** What un-retiring would leave; nothing is removed. */
     unretireCookie(cbid: string, name: string, opts: { dryRun: true }): Promise<{ dryRun: true; retired: RetiredCookie[] }>;
-    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch, referalli, firstpromoter, partnerstack, tapfiliate, impact, seolyticize): params, what it declared here, manifest status. */
+    /** Every declaration preset (atlas, forumulate, chatly, cookiemunch, referalli, firstpromoter, partnerstack, tapfiliate, impact, seolyticize, lucida, hermetica, watchtower): params, what it declared here, manifest status. */
     cookiePresets(cbid: string): Promise<{ presets: CookiePreset[]; aliases?: Record<string, string> }>;
     /**
      * Apply (or re-sync) a vendor preset: declares what that platform writes, marked
@@ -2900,6 +2964,8 @@ export interface CookieMunchClient {
     dryRunConnectExecutor(input: DsarExecutorInput | DsarExecutorPresetInput): Promise<DsarExecutorDryRun>;
     /** The versioned presets, whether each is usable now (or waits on another platform), and the org canary address. */
     executorPresets(): Promise<ExecutorPresets>;
+    /** The platforms a site's cookie rows and partner links imply that have no connected system yet; every site the key reaches without `cbid`. */
+    executorSuggestions(cbid?: string): Promise<{ data: ExecutorSuggestion[] }>;
     /**
      * Rebuild a connection from its preset's latest version (or `presetVersion`), keeping its id
      * and credentials; or adopt a preset on a hand-written one by naming it. Answers with `diff`.
@@ -2940,6 +3006,8 @@ export interface CookieMunchClient {
     executorHealthHistory(id: string, opts?: { limit?: number }): Promise<ExecutorHealth[]>;
     /** Run the cm-standard-v2 conformance kit against a connection, on the canary subject only. */
     executorConformance(id: string): Promise<ExecutorConformanceResult>;
+    /** The connection's current completion secret and the URL it signs for (dsar:write; each read is audited). */
+    getExecutorCompletionSecret(id: string): Promise<CompletionSecret>;
     /** A new completion secret, shown once; the old one keeps verifying for 24 hours. */
     rollExecutorCompletionSecret(id: string): Promise<CompletionSecretRolled>;
   };
@@ -3089,8 +3157,11 @@ export interface CookieMunchClient {
     };
   };
   /** The org's audit log, newest first. API actions appear as `apikey:<prefix>`. */
-  /** `{ actor: 'self' }` reads the calling key's own rows, the one form a scoped key may call. */
-  audit(limit?: number, opts?: { actor?: string }): Promise<{ entries: AuditEntry[] }>;
+  /**
+   * `{ actor: 'self' }` reads the calling key's own rows, which any key may call. Otherwise an unscoped key or
+   * `audit:read`. `since` (ISO 8601 or epoch ms) keeps rows at or after it.
+   */
+  audit(limit?: number, opts?: { actor?: string; since?: string | number }): Promise<{ entries: AuditEntry[] }>;
   /** Stream the audit log to an HTTPS endpoint as CloudEvents 1.0. Unscoped keys. */
   auditSink: {
     get(): Promise<{ sink: AuditSink }>;
@@ -3176,9 +3247,13 @@ export interface CookieMunchClient {
    */
   rightsIdentity: {
     get(cbid: string): Promise<RightsIdentity>;
+    /** `dryRun`: checked in full (the key set fetched), nothing saved; answers `{ dryRun, setting, diff }`. */
     set(cbid: string, input: RightsIdentityInput): Promise<RightsIdentity>;
+    set(cbid: string, input: RightsIdentityInput, opts: { dryRun: true }): Promise<{ dryRun: true; setting: RightsIdentity; diff: Array<{ path: string; from?: unknown; to?: unknown }> }>;
     /** Remove the site's own setting: it inherits the organisation default again. */
     remove(cbid: string): Promise<RightsIdentity>;
+    /** Check one session token as the rights intake would, and say why it fails. Files nothing. */
+    check(cbid: string, token: string): Promise<RightsIdentityCheck>;
   };
   /** A site's rights-request settings: graceDays (0–30; 7 for a new site, 0 until set for one that existed before). Requires dsar:read / dsar:write. */
   dsarSettings: {
@@ -3354,7 +3429,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       lintConfig: (cbid, config, opts) =>
         request('POST', `/sites/${enc(cbid)}/config/lint${qs({ replace: opts?.replace ? 1 : undefined })}`, config) as Promise<ButtonParityLint>,
       cookies: (cbid) => get(`/sites/${enc(cbid)}/cookies`) as Promise<CookieDeclaration>,
-      scan: (cbid, o) => request('POST', `/sites/${enc(cbid)}/scan${qs({ wait: o?.wait })}`) as Promise<ScanStatus>,
+      scan: (cbid, o) => request('POST', `/sites/${enc(cbid)}/scan${qs({ wait: o?.wait })}`, o?.cookies !== undefined ? { cookies: o.cookies } : undefined) as Promise<ScanStatus>,
       scanStatus: (cbid, o) => get(`/sites/${enc(cbid)}/scan${qs({ wait: o?.wait })}`) as Promise<ScanStatus>,
       waitForScan: async (cbid, o) => {
         const until = Date.now() + (o?.timeoutMs ?? 120_000);
@@ -3375,7 +3450,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       policy: (cbid, o) =>
         request(
           'GET',
-          `/sites/${enc(cbid)}/policy${qs({ contactEmail: o?.contactEmail, effectiveDate: o?.effectiveDate, jurisdictions: o?.jurisdictions?.join(','), fragment: o?.fragment, format: o?.format, lang: o?.lang })}`,
+          `/sites/${enc(cbid)}/policy${qs({ contactEmail: o?.contactEmail, effectiveDate: o?.effectiveDate, jurisdictions: o?.jurisdictions?.join(','), fragment: o?.fragment, format: o?.format, include: o?.include, lang: o?.lang })}`,
           undefined,
           true,
         ) as Promise<string>,
@@ -3635,6 +3710,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       upsertExecutor: (input, o) => request('PUT', `/dsar/executors${qs({ verify: o?.verify === true ? '1' : o?.verify })}`, input) as Promise<DsarExecutor & { upserted: 'created' | 'updated' }>,
       dryRunConnectExecutor: (input) => request('POST', '/dsar/executors?dryRun=1', input) as Promise<DsarExecutorDryRun>,
       executorPresets: () => get('/dsar/executors/presets') as Promise<ExecutorPresets>,
+      executorSuggestions: (cbid) => get(`/dsar/executors/suggestions${qs({ cbid })}`) as Promise<{ data: ExecutorSuggestion[] }>,
       upgradeExecutorPreset: (id, input = {}) =>
         request('POST', `/dsar/executors/${enc(id)}/upgrade-preset`, input) as Promise<DsarExecutor & { diff: ConfigChange[] }>,
       dryRunUpgradeExecutorPreset: (id, input = {}) =>
@@ -3656,6 +3732,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       executorHealthHistory: (id, opts = {}) =>
         get(`/dsar/executors/${enc(id)}/health/history${qs({ limit: opts.limit })}`) as Promise<ExecutorHealth[]>,
       executorConformance: (id) => request('POST', `/dsar/executors/${enc(id)}/test`, { conformance: true }) as Promise<ExecutorConformanceResult>,
+      getExecutorCompletionSecret: (id) => request('GET', `/dsar/executors/${enc(id)}/completion-secret`) as Promise<CompletionSecret>,
       rollExecutorCompletionSecret: (id) => request('POST', `/dsar/executors/${enc(id)}/completion-secret/roll`) as Promise<CompletionSecretRolled>,
     },
     preferences: {
@@ -3742,7 +3819,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
         remove: () => request('DELETE', '/org/rights-identity') as Promise<RightsIdentity>,
       },
     },
-    audit: (limit, opts) => get(`/audit${qs({ limit, actor: opts?.actor })}`) as Promise<{ entries: AuditEntry[] }>,
+    audit: (limit, opts) => get(`/audit${qs({ limit, actor: opts?.actor, since: opts?.since })}`) as Promise<{ entries: AuditEntry[] }>,
     auditSink: {
       get: () => get('/audit/sink') as Promise<{ sink: AuditSink }>,
       set: (input) => request('PUT', '/audit/sink', input) as Promise<{ sink: AuditSink; secret?: string }>,
@@ -3799,8 +3876,9 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
     },
     rightsIdentity: {
       get: (cbid) => get(`/sites/${enc(cbid)}/rights-identity`) as Promise<RightsIdentity>,
-      set: (cbid, input) => request('PUT', `/sites/${enc(cbid)}/rights-identity`, input) as Promise<RightsIdentity>,
+      set: ((cbid: string, input: RightsIdentityInput, o?: { dryRun?: boolean }) => request('PUT', `/sites/${enc(cbid)}/rights-identity${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input)) as never,
       remove: (cbid) => request('DELETE', `/sites/${enc(cbid)}/rights-identity`) as Promise<RightsIdentity>,
+      check: (cbid, token) => request('POST', `/sites/${enc(cbid)}/rights-identity/check`, { token }) as Promise<RightsIdentityCheck>,
     },
     dsarSettings: {
       get: (cbid) => get(`/sites/${enc(cbid)}/dsar-settings`) as Promise<DsarSettings>,

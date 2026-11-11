@@ -128,7 +128,10 @@ export interface IntegrationHealthReport {
   cbid: string;
   checkedAt: number;
   generatedAt: string;
+  /** No failing error or warning (from API version 2026-11-11: no failing error; warnings allowed). */
   ok: boolean;
+  /** No failing error or warning at all, in every API version. */
+  clean?: boolean;
   counts: { error: number; warning: number; notChecked: number; waived: number };
   checks: HealthRow[];
 }
@@ -192,14 +195,18 @@ export interface ProvisionResult {
   checklist?: string[];
 }
 
-/** A partner the deployment knows: built in (forumulate, atlas, chatly, referalli) or any other registered on it. */
-export type PartnerId = 'forumulate' | 'atlas' | 'chatly' | 'referalli' | (string & {});
+/** A partner the deployment knows: built in (forumulate, atlas, chatly, referalli, hermetica) or any other registered on it. */
+export type PartnerId = 'forumulate' | 'atlas' | 'chatly' | 'referalli' | 'hermetica' | (string & {});
 export interface PartnerLinkCreate {
   partner: PartnerId;
   /** The partner's id for the receiving account (a Forumulate organisation id, an Atlas instance id). */
   externalId: string;
   label?: string;
-  events?: Array<'consent.recorded' | 'consent.withdrawn'>;
+  /**
+   * Default: the consent events (all three for hermetica). `subscription.changed` sends each change to a person's topic
+   * subscriptions and lets the partner apply its own (needs a key with subscriptions:write and identity:read).
+   */
+  events?: Array<'consent.recorded' | 'consent.withdrawn' | 'subscription.changed'>;
 }
 export interface PartnerLink {
   id: string;
@@ -652,7 +659,7 @@ export interface PreferenceRecord {
   version: number;
 }
 
-/** GET /v1/categories/registry — the reserved category templates (CMU-X15). */
+/** GET /v1/categories/registry — the reserved category templates. */
 export interface CategoryRegistry {
   version: 1;
   standard: string[];

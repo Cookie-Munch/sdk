@@ -76,6 +76,14 @@ describe('waiting for a scan', () => {
     expect(calls[1]).toMatchObject({ method: 'GET', url: 'https://api.example.com/v1/sites/a/scan?wait=5' });
   });
 
+  it('scan sends cookies for a signed-in crawl in the body, and no body without them', async () => {
+    const { fc, calls } = client([{ json: {} }, { json: {} }]);
+    await fc.sites.scan('a', { cookies: 'sid=abc' });
+    expect(calls[0]).toMatchObject({ method: 'POST', url: 'https://api.example.com/v1/sites/a/scan', body: { cookies: 'sid=abc' } });
+    await fc.sites.scan('a');
+    expect(calls[1]!.body).toBeUndefined();
+  });
+
   it('waitForScan long-polls until the scan settles', async () => {
     const { fc, calls } = client([
       { json: { status: 'scanning', state: 'scanning', scanId: 's1', lastScannedAt: null } },

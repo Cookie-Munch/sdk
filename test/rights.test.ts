@@ -7,7 +7,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRightsHandlers, fileStore, sqlStore, redisStore, RIGHTS_STORE_TABLE_SQL, type RightsHandlersOptions } from '../src/rights.js';
+import { createRequire } from 'node:module';
+import { createRightsHandlers, fileStore, sqlStore, redisStore, RIGHTS_STORE_TABLE_SQL, RIGHTS_STORE_TABLE_SQLITE, type RightsHandlersOptions } from '../src/rights.js';
 import { runExecutorConformance, CONFORMANCE_RULES } from '../src/executor-conformance.js';
 
 const key = 'sk_exec_0123456789abcdef';
@@ -102,7 +103,7 @@ describe('createRightsHandlers', () => {
     expect(await (await call('GET', `/requests/${body.id}`)).json()).toEqual(body);
   });
 
-  it('schedules an erasure until executeAfter, runs it on the first read after, and passes the reason', async () => {
+  it('schedules an erasure until executeAfter, runs it on POST /run after (never on a GET), and passes the reason', async () => {
     const seen: unknown[] = [];
     const clock = { t: T0 };
     const { call, erased } = make({ erase: (r) => { seen.push(r); erased.push(r.subjectId); } }, clock);
@@ -111,12 +112,33 @@ describe('createRightsHandlers', () => {
     expect(opened).toMatchObject({ canonicalType: 'deletion', status: 'scheduled', eta: executeAfter });
     expect(await (await call('GET', `/requests/${opened.id}`)).json()).toMatchObject({ status: 'scheduled' });
     expect(erased).toEqual([]);
+    // Too early: /run answers the scheduled request and does nothing.
+    expect(await (await call('POST', `/requests/${opened.id}/run`)).json()).toMatchObject({ status: 'scheduled' });
     clock.t = T0 + 3_600_000;
-    expect(await (await call('GET', `/requests/${opened.id}`)).json()).toMatchObject({ status: 'completed' });
+    expect(await (await call('GET', `/requests/${opened.id}`)).json()).toMatchObject({ status: 'scheduled' });
+    expect(erased).toEqual([]);
+    expect(await (await call('POST', `/requests/${opened.id}/run`)).json()).toMatchObject({ status: 'completed' });
     expect(erased).toEqual(['u1']);
-    expect(seen[0]).toMatchObject({ subjectId: 'u1', type: 'deletion', requestedType: 'erasure', caseId: 'case-1', reason: 'asked by email', executeAfter });
+    expect(seen[0]).toMatchObject({ subjectId: 'u1', type: 'erasure', requestedType: 'erasure', caseId: 'case-1', reason: 'asked by email', executeAfter });
+    await call('POST', `/requests/${opened.id}/run`);
     await call('GET', `/requests/${opened.id}`);
     expect(erased).toEqual(['u1']);
+  });
+
+  it('one vocabulary: deletion and erase read as erasure, right: portability reaches portability (else access)', async () => {
+    const seen: Array<{ type: string; requestedType: string }> = [];
+    const { call } = make({ erase: (r) => void seen.push(r), access: (r) => void seen.push(r) });
+    expect(await (await call('POST', '/requests', { subjectId: 'u1', type: 'deletion', caseId: 'a' })).json()).toMatchObject({ canonicalType: 'deletion' });
+    await call('POST', '/requests', { subjectId: 'u1', type: 'erase', caseId: 'b' });
+    const p = await (await call('POST', '/requests', { subjectId: 'u1', type: 'access', right: 'portability', caseId: 'c' })).json();
+    expect(p).toMatchObject({ type: 'portability', canonicalType: 'access' });
+    expect(seen.map((r) => [r.type, r.requestedType])).toEqual([['erasure', 'deletion'], ['erasure', 'erase'], ['portability', 'portability']]);
+    const own: string[] = [];
+    const withOwn = make({ portability: (r) => void own.push(r.type), access: () => { throw new Error('not access'); } });
+    await withOwn.call('POST', '/requests', { subjectId: 'u1', type: 'access', right: 'portability', caseId: 'd' });
+    expect(own).toEqual(['portability']);
+    // An unknown right falls back to the type the contract always sent.
+    expect((await call('POST', '/requests', { subjectId: 'u1', type: 'access', right: 'opt-out', caseId: 'e' })).status).toBe(201);
   });
 
   it('a cancel before executeAfter leaves everything in place, and a completed request is too late to cancel', async () => {
@@ -220,7 +242,7 @@ describe('createRightsHandlers', () => {
     expect(() => createRightsHandlers({ key: '', idSecret, lookup: () => null })).toThrow(/key/);
   });
 
-  it('fileStore: a scheduled erasure survives a restart and runs on the next poll after executeAfter', async () => {
+  it('fileStore: a scheduled erasure survives a restart and runs on the first /run after executeAfter', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'cm-rights-'));
     try {
       const clock = { t: T0 };
@@ -232,7 +254,7 @@ describe('createRightsHandlers', () => {
       expect(await (await second.call('GET', `/requests/${opened.id}`)).json()).toMatchObject({ status: 'scheduled' });
       clock.t = T0 + 3600_000;
       expect(second.erased).toEqual([]);
-      expect(await (await second.call('GET', `/requests/${opened.id}`)).json()).toMatchObject({ status: 'completed' });
+      expect(await (await second.call('POST', `/requests/${opened.id}/run`)).json()).toMatchObject({ status: 'completed' });
       expect(second.erased).toEqual(['u1']);
       expect(first.erased).toEqual([]);
     } finally {
@@ -272,6 +294,31 @@ describe('createRightsHandlers', () => {
       vi.useRealTimers();
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("sqlStore({ dialect: 'sqlite' }) on a real SQLite: a scheduled erasure survives a restart, a TTL expires", async () => {
+    // createRequire: Vite does not resolve the newer node: builtins.
+    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    db.exec(RIGHTS_STORE_TABLE_SQLITE);
+    const query = async (sql: string, p: unknown[]) => {
+      const st = db.prepare(sql);
+      return /^\s*SELECT/i.test(sql) ? st.all(...(p as never[])) : (st.run(...(p as never[])), []);
+    };
+    const clock = { t: T0 };
+    const first = make({ store: sqlStore({ query, dialect: 'sqlite' }) }, clock);
+    const opened = await (await first.call('POST', '/requests', { subjectId: 'u1', type: 'erasure', caseId: 'c', executeAfter: new Date(T0 + 1000).toISOString() })).json();
+    clock.t = T0 + 1000;
+    const second = make({ store: sqlStore({ query, dialect: 'sqlite' }) }, clock);
+    // Its own key: each handler's helper counts keys from 1, and both share the table.
+    expect(await (await second.call('POST', `/requests/${opened.id}/run`, undefined, { 'idempotency-key': 'case-1:conn-1:run-1' })).json()).toMatchObject({ status: 'completed' });
+    expect(second.erased).toEqual(['u1']);
+    const store = sqlStore({ query, dialect: 'sqlite' });
+    await store.set('idem:x', 'v', { ttlSeconds: 1 });
+    expect(await store.get('idem:x')).toBe('v');
+    db.prepare('UPDATE cookiemunch_rights_store SET expires_at = ? WHERE key = ?').run(Date.now() - 1, 'idem:x');
+    expect(await store.get('idem:x')).toBeNull();
+    await store.delete('idem:x');
   });
 
   it('sqlStore and redisStore pass the TTL through and keep request state without one', async () => {
@@ -339,8 +386,8 @@ describe('createRightsHandlers completion', () => {
     const s = sender();
     const { call } = make({ completion: { url, secret, fetch: s.fetch } });
     const opened = (await (await call('POST', '/requests', { type: 'export', subjectId: 'u1', caseId: 'case_9' })).json()) as { id: string };
-    await flush();
-    expect(s.sent).toHaveLength(1);
+    // The push is fire-and-forget and signs on Web Crypto's thread pool: wait for it, not for one tick.
+    await vi.waitFor(() => expect(s.sent).toHaveLength(1));
     const { headers, body } = s.sent[0]!;
     expect(s.sent[0]!.url).toBe(url);
     expect(headers['webhook-timestamp']).toBe(String(Math.floor(T0 / 1000)));
@@ -366,7 +413,7 @@ describe('createRightsHandlers completion', () => {
     await expect(h.complete('r1.forged.sig')).rejects.toThrow(/not a request id/);
   });
 
-  it('a scheduled erasure that runs on the poll, and a cancel, are pushed too', async () => {
+  it('a scheduled erasure that runs on /run, and a cancel, are pushed too', async () => {
     const s = sender();
     const clock = { t: T0 };
     const { call } = make({ completion: { url, secret, fetch: s.fetch } }, clock);
@@ -377,7 +424,7 @@ describe('createRightsHandlers completion', () => {
     expect(s.sent).toHaveLength(0);
     await call('POST', `/requests/${encodeURIComponent(b.id)}/cancel`);
     clock.t += 60_000;
-    await call('GET', `/requests/${encodeURIComponent(a.id)}`);
+    await call('POST', `/requests/${encodeURIComponent(a.id)}/run`);
     // The pushes are fire-and-forget (signing is async): wait for both rather than a fixed number of ticks.
     await vi.waitFor(() => expect(s.sent).toHaveLength(2));
     expect(s.sent.map((x) => JSON.parse(x.body).request.status).sort()).toEqual(['cancelled', 'completed']);

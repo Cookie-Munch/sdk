@@ -184,7 +184,7 @@ export function readConsent(
 ): ServerConsent | null | Promise<ServerConsent | null> {
   const consent = readUnsigned(source, opts);
   if (opts.requireSigned !== true) return consent;
-  // CMU-S04: a decision counts only when the API's signature over it verifies against the
+  // A decision counts only when the API's signature over it verifies against the
   // published key set. A hand-written cookie (no sig) or a forged one reads as no decision.
   if (!consent?.sig) return Promise.resolve(null);
   return verifyDecisionSignature(consent, opts).then((ok) => (ok ? consent : null));
@@ -229,7 +229,7 @@ export function isAllowed(consent: ServerConsent | null, category: ConsentCatego
   return consent.custom?.[category] === true;
 }
 
-// ---- signatures (CMU-S04) and consent tokens (CMU-F06) ----
+// ---- signatures and consent tokens ----
 
 export const DEFAULT_JWKS_URL = 'https://api.cookiemunch.net/v1/partner/jwks.json';
 
@@ -349,7 +349,7 @@ export interface VerifyTokenOptions extends KeySetOptions {
 }
 
 /**
- * Verify a consent token from `CookieMunch.getConsentToken()` (CMU-F06) against the published
+ * Verify a consent token from `CookieMunch.getConsentToken()` against the published
  * key set and return its claims. Throws on a bad signature, a wrong site, or an expired token.
  */
 export async function verifyToken(token: string, opts: VerifyTokenOptions = {}): Promise<ConsentTokenClaims> {

@@ -1,5 +1,5 @@
 /**
- * Operator token exchange (RFC 8693, CMU-X33): swap your identity provider's token for a short-lived,
+ * Operator token exchange (RFC 8693): swap your identity provider's token for a short-lived,
  * scoped Cookie Munch API key, so no long-lived key has to live in a file.
  *
  *   import { exchangeOperatorToken, createCookieMunch } from '@cookiemunch/sdk';

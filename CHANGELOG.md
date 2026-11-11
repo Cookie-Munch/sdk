@@ -2,6 +2,17 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.22.0 (2026-11-11)
+
+- Added: the rights handlers speak six rights (`access`, `erasure`, `rectification`, `portability`, `restriction`, `closure`); `deletion` and `erase` read as `erasure`, ids minted before read the same, and a `portability` callback falls back to `access`.
+- Added: `POST /requests/{id}/run` on the rights handlers: a scheduled erasure runs on that POST, never inside a `GET`.
+- Added: `sqlStore({ dialect: 'sqlite' })` with `RIGHTS_STORE_TABLE_SQLITE`.
+- Added: `cookies` on `sites.scan` for a signed-in crawl; `scan` (schedule, afterDeploy) on site config; `undeclared` and `stale` on a finished scan.
+- Added: `params` on executor connect and upgrade-preset (Referalli `programId`, cm-standard-v2 `scopeName`/`scopeId`, Lucida `projectId`/`publicKey`, Hermetica `workspaceId`/`storage`).
+- Added: `since` on the audit log; `getExecutorCompletionSecret`; `rightsIdentity.check`; `executorSuggestions`; the `hermetica` mail provider.
+- Added: `channel` and `integrity` on the install snippet (`embedChannel: pinned:<version>`); `clean` on integration health; `hermetica` and `subscription.changed` on partner grants.
+- Changed: requests the SDK sends with no `CookieMunch-Version` stay on API version 2026-10-24 response shapes.
+
 ## 0.21.1 (2026-11-05)
 
 - Fixed: conformance refuses a `testSubjectEmail` or `eraseSubjectEmail` that isn't an email address, and compares subjects without regard to case.

@@ -1,5 +1,5 @@
 /**
- * The cm-standard-v2 executor conformance kit (CMU-X20).
+ * The cm-standard-v2 executor conformance kit.
  *
  * cm-standard-v2 is an open contract: any system that holds personal data can implement it and
  * be driven by Cookie Munch with no code on our side (docs: cookiemunch.net/docs/executor-contract-v2).
