@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.27.0 (2026-11-12)
+
+- Added: `PartnerLink.lastIgnoredAt` and `lastIgnoredReason`: the partner took the last delivery but answered `{ ignored: true }`.
+- Added: the `rights:read` scope reads the organisation's rights settings (mail provider, controller, rights sign-in, captcha) without `rights:write`.
+
 ## 0.26.0 (2026-11-12)
 
 - Added: `ScanStatus.foreignCmp` (`{ name, hosts }`): another consent platform the last crawl saw the site loading. A scan's `buttonParity` now covers only the Cookie Munch banner.

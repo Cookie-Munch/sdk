@@ -237,6 +237,9 @@ export interface PartnerLink {
   revokedBy?: string | null;
   lastDeliveryAt: number | null;
   lastError: string | null;
+  /** The partner took the last delivery but said it ignored it (e.g. `site_not_registered`); null when it acted on it. */
+  lastIgnoredAt?: number | null;
+  lastIgnoredReason?: string | null;
 }
 export interface PartnerCatalogEntry { id: PartnerId; label: string; externalIdLabel: string; events: string[]; available: boolean; waitingOn?: string }
 
