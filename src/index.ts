@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.24.0';
+export const SDK_VERSION = '0.25.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -602,6 +602,8 @@ export interface ScanStatus {
   lastScannedAt: number | null;
   /** What the last scan saw of the live banner's Accept all / Reject all. Absent until measured. */
   buttonParity?: ButtonParityScan;
+  /** Visitors' measurements per viewport class, when any reported. */
+  buttonParityByViewport?: { desktop?: ButtonParityScan; mobile?: ButtonParityScan };
   /** Where the last scan is: `idle` when the site was never scanned (older servers left it out). */
   state?: 'idle' | 'queued' | 'scanning' | 'done' | 'failed';
   scanId?: string;
@@ -640,6 +642,11 @@ export interface ButtonParityScan {
   /** 0–100; null when no banner was found. */
   score: number | null;
   checkedAt?: number;
+  /** Present when real visitors' browsers measured it (most distinct networks agree on each finding). */
+  source?: 'visitors';
+  viewport?: 'mobile' | 'desktop';
+  /** Distinct networks the findings were agreed over. */
+  reports?: number;
 }
 
 /** @deprecated The server returns {@link ScanStatus}; kept only for back-compat. */

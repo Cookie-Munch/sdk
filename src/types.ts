@@ -124,6 +124,14 @@ export interface HealthRow {
   error?: string;
   /** A waiver covers this failing row; `ok` is then null. */
   waived?: { reason: string; by: string; until: number | null };
+  /** `check:subject`, unique in a report: one check run for two connections is two rows with two keys. */
+  key: string;
+  /** Failing rows: why, in one sentence (the same as `detail`). */
+  reason?: string;
+  /** Failing rows: who has to act. `you`, `cookiemunch` (send us the `ref`), or a vendor id. */
+  fixedBy?: 'you' | 'cookiemunch' | (string & {});
+  /** The record the row is about: a connection or a scan. */
+  ref?: { type: 'executor' | 'scan'; id: string };
   lastCheckedAt: number;
 }
 export interface IntegrationHealthReport {

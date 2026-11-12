@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.25.0 (2026-11-12)
+
+- Added: `HealthRow.key` (`check:subject`, unique in a report), and on failing rows `reason`, `fixedBy` (`you`, `cookiemunch` or a vendor id) and `ref` (the connection or scan the row is about).
+- Added: `ButtonParityScan.source` (`"visitors"`), `viewport` and `reports`, and `ScanStatus.buttonParityByViewport`: the live banner's buttons as visitors' browsers painted them.
+
 ## 0.24.0 (2026-11-12)
 
 - Added: `Identity.attention`, the one thing to fix first (`GET /v1/me`). With no mail provider, that is `requests_filed_unverified`.
