@@ -2,6 +2,12 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.24.0 (2026-11-12)
+
+- Added: `Identity.attention`, the one thing to fix first (`GET /v1/me`). With no mail provider, that is `requests_filed_unverified`.
+- Added: `IntegrationHealthReport.top`, the finding to fix first (also `checks[0]`).
+- Added: `openapiUrl` and `statusUrl` on an executor suggestion's `waitingOn`.
+
 ## 0.23.0 (2026-11-11)
 
 - Added: the `blocked` rights status. A callback answers `{ status: 'blocked', blocked: { reason, message } }` when the person must act first, and `status` is asked again on each read. `DsarCaseStatus` and case tasks carry `blocked`.

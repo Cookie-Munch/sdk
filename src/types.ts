@@ -7,6 +7,8 @@
 export interface Identity {
   orgId: string;
   orgName?: string | null;
+  /** The one thing to fix first: the first of `rights.warningDetails` (no mail provider leads). Absent when nothing needs fixing. */
+  attention?: { code: string; message: string; fix: string; requiredScopes?: string[]; cbids?: string[]; system?: string };
   /** The EFFECTIVE plan — the one every feature gate and limit uses. */
   plan: string;
   /**
@@ -133,6 +135,8 @@ export interface IntegrationHealthReport {
   /** No failing error or warning at all, in every API version. */
   clean?: boolean;
   counts: { error: number; warning: number; notChecked: number; waived: number };
+  /** The finding to fix first, also `checks[0]`: a missing mail provider leads, then the first error, then the first warning. */
+  top?: HealthRow;
   checks: HealthRow[];
 }
 /** PUT /v1/integration-health/waivers. */

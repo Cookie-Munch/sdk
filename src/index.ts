@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.23.0';
+export const SDK_VERSION = '0.24.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -2196,7 +2196,7 @@ export interface ExecutorSuggestion {
   /** Which cookie rows and partner link implied it. */
   reason: string;
   available: boolean;
-  waitingOn?: { platform: string; items: string[]; operations: string[] };
+  waitingOn?: { platform: string; items: string[]; operations: string[]; openapiUrl?: string; statusUrl?: string };
 }
 
 export interface ExecutorPresets {
