@@ -227,6 +227,20 @@ describe('createRightsHandlers', () => {
     expect(await (await call('GET', `/requests/${opened.id}`)).json()).toMatchObject({ status: 'completed', result: { inline: true } });
   });
 
+  it('answers blocked with its reason and message, and asks `status` again on each read (Lucida CM7)', async () => {
+    let owns = true;
+    const { call } = make({
+      erase: () => ({ status: 'blocked', blocked: { reason: 'sole_org_owner', message: 'Transfer or delete Acme first.' } }),
+      status: () => (owns ? { status: 'blocked', blocked: { reason: 'sole_org_owner', message: 'Transfer or delete Acme first.' } } : { status: 'completed' }),
+    });
+    const opened = await (await call('POST', '/requests', { subjectId: 'u1', type: 'deletion', caseId: 'c' })).json();
+    expect(opened).toMatchObject({ status: 'blocked', blocked: { reason: 'sole_org_owner', message: 'Transfer or delete Acme first.' } });
+    owns = false;
+    const after = await (await call('GET', `/requests/${opened.id}`)).json();
+    expect(after.status).toBe('completed');
+    expect(after.blocked).toBeUndefined();
+  });
+
   it('a throwing callback is a 500 that is not replayed', async () => {
     let fail = true;
     const { call } = make({ access: () => { if (fail) throw new Error('db down'); } });
@@ -500,5 +514,36 @@ describe('the erase rule (eraseSubjectEmail)', () => {
     expect(erased).toEqual([]);
     expect(r.rules.some((x) => x.id === 'requests.erase.removes_subject')).toBe(false);
     await expect(runExecutorConformance({ ...opts, fetch: via(h), eraseSubjectEmail: canaryEmail })).rejects.toThrow(/throwaway/);
+  });
+});
+
+describe('the export rule (testSubjectEmail, Lucida CM6)', () => {
+  const via = (h: ReturnType<typeof make>['h']) => ((input: string | URL | Request, init?: RequestInit) => h.fetch(new Request(input, init))) as typeof fetch;
+  const opts = { baseUrl: 'https://app.example', secret: key, canaryEmail, runId: 'run1', now: () => T0, testSubjectEmail: 'tester@example.com' };
+  const exporting = (result: unknown) => make({
+    lookup: ({ emails }: { emails: string[] }) => (emails.includes('tester@example.com') ? 'u_test' : null),
+    access: () => ({ status: 'completed' as const, result }),
+  } as never).h;
+  const rule = (r: Awaited<ReturnType<typeof runExecutorConformance>>) => r.rules.find((x) => x.id === 'requests.access.no_secrets');
+
+  it('passes a clean export', async () => {
+    const r = await runExecutorConformance({ ...opts, fetch: via(exporting({ profile: { email: 'tester@example.com', name: 'T' }, events: [{ name: 'signup' }] })) });
+    expect(rule(r)).toMatchObject({ status: 'pass' });
+    expect(r.ok).toBe(true);
+  });
+
+  it('fails an export carrying a credential, naming the paths and never the values', async () => {
+    const r = await runExecutorConformance({ ...opts, fetch: via(exporting({ profile: { email: 'tester@example.com', password_hash: '$2b$12$abcdefghijklmnopqrstuv' }, keys: [{ label: 'ci', value: 'sk_live_abc123' }] })) });
+    const x = rule(r)!;
+    expect(x.status).toBe('fail');
+    expect(x.detail).toContain('$.profile.password_hash');
+    expect(x.detail).toContain('$.keys[0].value');
+    expect(x.detail).not.toContain('sk_live_abc123');
+    expect(r.ok).toBe(false);
+  });
+
+  it('is skipped without testSubjectEmail', async () => {
+    const r = await runExecutorConformance({ ...opts, testSubjectEmail: undefined, fetch: via(exporting({})) } as never);
+    expect(rule(r)).toBeUndefined();
   });
 });

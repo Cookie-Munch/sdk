@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.22.0';
+export const SDK_VERSION = '0.23.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -2469,6 +2469,22 @@ export interface CookieMunchClient {
       name: string,
       opts?: { mintKey?: boolean; keyScopes?: string[]; keyExpiresInDays?: number; keyOwner?: string; inheritFrom?: string } & ResourceTagsInput,
     ): Promise<{ org: { id: string; name: string; role: string }; apiKey?: string; keyError?: string; inherited?: { controller: boolean; mailProvider: boolean }; warnings?: string[] }>;
+    /**
+     * What `create` would do, without creating anything (`POST /v1/orgs?dryRun=1`). `provision` is a
+     * `provision()` body, planned against the org that would be created (its id reads `<new org>`).
+     */
+    createDryRun(
+      name: string,
+      opts?: { mintKey?: boolean; keyScopes?: string[]; keyExpiresInDays?: number; inheritFrom?: string; provision?: ProvisionRequest | ProvisionRequestV2 },
+    ): Promise<{
+      dryRun: true;
+      org: { name: string; wouldCreate: boolean; inheritFrom?: string };
+      refusal?: { error: 'org_limit'; orgLimit: { max: number | null; plan: string; used: number }; upgradeUrl?: string };
+      key?: { scopes: string[] | 'all'; expiresInDays: number };
+      /** The provision dry run's answer (a ProvisionResult on 200, an error body otherwise). */
+      provision?: unknown;
+      provisionStatus?: number;
+    }>;
     /** Hard-delete a SANDBOX organisation of this account (created with metadata.stack_sandbox). Anything else: 403 not_a_sandbox. */
     deleteSandbox(id: string): Promise<SandboxPurge>;
   };
@@ -3391,6 +3407,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
           inherited?: { controller: boolean; mailProvider: boolean };
           warnings?: string[];
         }>,
+      createDryRun: (name, opts) => request('POST', '/orgs?dryRun=1', { name, ...(opts ?? {}) }) as never,
       deleteSandbox: (id) => request('DELETE', `/orgs/${enc(id)}?hard=1`) as Promise<SandboxPurge>,
     },
     metadata: {

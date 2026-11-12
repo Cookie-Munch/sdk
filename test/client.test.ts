@@ -78,6 +78,14 @@ describe('orgs', () => {
     expect(out.orgs[0]!.planSource).toBe('org');
     expect(out.orgLimit.max).toBeNull();
   });
+
+  it('createDryRun posts to ?dryRun=1 and creates nothing (Lucida CM5)', async () => {
+    const { fc, calls } = client([{ json: { dryRun: true, org: { name: 'Numera', wouldCreate: true } } }]);
+    const out = await fc.orgs.createDryRun('Numera', { mintKey: true });
+    expect(calls[0]!.method).toBe('POST');
+    expect(calls[0]!.url).toBe('https://api.example.com/v1/orgs?dryRun=1');
+    expect(out.org.wouldCreate).toBe(true);
+  });
 });
 
 describe('sites', () => {

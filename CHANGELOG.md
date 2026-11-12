@@ -2,6 +2,12 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.23.0 (2026-11-11)
+
+- Added: the `blocked` rights status. A callback answers `{ status: 'blocked', blocked: { reason, message } }` when the person must act first, and `status` is asked again on each read. `DsarCaseStatus` and case tasks carry `blocked`.
+- Added: conformance rule `requests.access.no_secrets` (with `testSubjectEmail`): the test subject's export must hold no credential.
+- Added: `orgs.createDryRun` (`POST /v1/orgs?dryRun=1`), with an optional `provision` plan.
+
 ## 0.22.0 (2026-11-11)
 
 - Added: the rights handlers speak six rights (`access`, `erasure`, `rectification`, `portability`, `restriction`, `closure`); `deletion` and `erase` read as `erasure`, ids minted before read the same, and a `portability` callback falls back to `access`.

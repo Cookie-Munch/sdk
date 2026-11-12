@@ -372,7 +372,7 @@ export interface DsarCaseCreate {
   controller?: string;
 }
 
-export type DsarCaseStatus = 'pending' | 'scheduled' | 'processing' | 'completed' | 'completed_with_retention' | 'rejected' | 'cancelled';
+export type DsarCaseStatus = 'pending' | 'scheduled' | 'processing' | 'blocked' | 'completed' | 'completed_with_retention' | 'rejected' | 'cancelled';
 
 export interface RetentionLine {
   category: string;
@@ -394,6 +394,8 @@ export interface DsarCaseTask {
   awaitingApproval?: true;
   /** What the system said the erasure would remove. */
   preview?: { at: number; text?: string; error?: string };
+  /** Present while the system waits on the person (status `blocked`): its reason code and its own words to them. */
+  blocked?: { reason?: string; message?: string };
   /** This row's own account at that system, when one email matched several. */
   subjectId?: string;
 }

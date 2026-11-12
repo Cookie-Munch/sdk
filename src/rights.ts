@@ -34,7 +34,7 @@ import { CANARY_ISSUER } from './executor-conformance.js';
  * back to `access` when there is no `portability`).
  */
 export type RightsType = 'access' | 'erasure' | 'rectification' | 'portability' | 'restriction' | 'closure';
-export type RightsStatus = 'pending' | 'scheduled' | 'processing' | 'completed' | 'completed_with_retention' | 'no_match' | 'rejected' | 'cancelled';
+export type RightsStatus = 'pending' | 'scheduled' | 'processing' | 'blocked' | 'completed' | 'completed_with_retention' | 'no_match' | 'rejected' | 'cancelled';
 
 export interface RightsIdentity {
   iss: string;
@@ -57,8 +57,13 @@ export interface RightsRetention {
 
 /** What a callback answers. Returning nothing means `completed`. */
 export interface RightsOutcome {
-  status: 'pending' | 'processing' | 'completed' | 'completed_with_retention' | 'no_match' | 'rejected';
+  status: 'pending' | 'processing' | 'blocked' | 'completed' | 'completed_with_retention' | 'no_match' | 'rejected';
   eta?: string;
+  /**
+   * With `blocked`: the person must act before you can (e.g. hand over an organisation they own alone).
+   * `message` is shown to them on their status page as your words; `reason` is a short code for the controller.
+   */
+  blocked?: { reason?: string; message?: string };
   /** Plain words; required in spirit for `rejected`. */
   detail?: string;
   retention?: RightsRetention[];
@@ -156,7 +161,7 @@ const WIRE: Record<RightsType, string> = {
   access: 'access', portability: 'access', erasure: 'deletion', closure: 'closure', restriction: 'restriction', rectification: 'rectification',
 };
 const TYPE_WORDS = 'access, export, portability, erasure, deletion, erase, closure, restriction, rectification';
-const OUTCOMES = new Set(['pending', 'processing', 'completed', 'completed_with_retention', 'no_match', 'rejected']);
+const OUTCOMES = new Set(['pending', 'processing', 'blocked', 'completed', 'completed_with_retention', 'no_match', 'rejected']);
 /** The contract's final statuses: each one is pushed as a signed completion. */
 const FINAL = new Set<RightsStatus>(['completed', 'completed_with_retention', 'no_match', 'rejected', 'cancelled']);
 /** Wait before each completion attempt after the first. */
@@ -168,7 +173,7 @@ const CANARY_EXT = /^canary:([0-9a-f]{16})$/;
 /** What the signed id carries: enough to answer without trusting the store for it. */
 type IdClaims = { s: string; t: RightsType; y: string; c: string; a?: number; n: string };
 /** The request's mutable state, in the store under `req:<id>`. */
-type Stored = { status: RightsStatus; eta?: string; detail?: string; retention?: RightsRetention[]; result?: unknown; reason?: string; notified?: true };
+type Stored = { status: RightsStatus; eta?: string; detail?: string; blocked?: { reason?: string; message?: string }; retention?: RightsRetention[]; result?: unknown; reason?: string; notified?: true };
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -266,6 +271,7 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     status: s.status,
     ...(s.eta ? { eta: s.eta } : {}),
     ...(s.detail ? { detail: s.detail } : {}),
+    ...(s.blocked && s.status === 'blocked' ? { blocked: s.blocked } : {}),
     ...(s.retention ? { retention: s.retention } : {}),
     ...(s.result !== undefined ? { result: s.result } : {}),
   });
@@ -338,6 +344,7 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     const next: Stored = { status: o2.status, ...(s.reason ? { reason: s.reason } : {}) };
     if (o2.eta) next.eta = o2.eta;
     if (o2.detail) next.detail = o2.detail;
+    if (o2.status === 'blocked' && o2.blocked) next.blocked = o2.blocked;
     if (o2.retention) next.retention = o2.retention;
     if (o2.result !== undefined) next.result = o2.result;
     await putStored(id, next);
@@ -397,7 +404,7 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
       return json(200, view(id, c, { status: 'rejected', detail: "this system no longer holds the request's state; nothing was done. Open it again." }));
     }
     // A scheduled erasure waits for POST /run: a GET is safe, it never acts.
-    if ((s.status === 'pending' || s.status === 'processing') && o.status && !CANARY_SUBJECT.test(c.s)) s = await act(id, c, s, o.status);
+    if ((s.status === 'pending' || s.status === 'processing' || s.status === 'blocked') && o.status && !CANARY_SUBJECT.test(c.s)) s = await act(id, c, s, o.status);
     return json(200, view(id, c, s));
   }
 

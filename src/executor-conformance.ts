@@ -61,7 +61,7 @@ export interface ConformanceOptions {
    * (`GET /v1/dsar/executors/presets` → `canaryEmail`).
    */
   canaryEmail: string;
-  /** A subject you seeded in your own store. It is only looked up, never erased. Without it, `lookup.test_subject.found` is skipped. */
+  /** A subject you seeded in your own store. It is looked up and exported (an access request), never erased. Without it, `lookup.test_subject.found` and `requests.access.no_secrets` are skipped. */
   testSubjectEmail?: string;
   /**
    * A THROWAWAY subject you seeded in your own store. It IS erased, for real, through your own erase code, so reseed it
@@ -117,6 +117,29 @@ export const CONFORMANCE_RULES: ReadonlyArray<{ id: string; title: string }> = [
 /** Asked for, not assumed: only with `testSubjectEmail`, so a run without one still reads as the 15 rules every receiver is held to. */
 const TEST_SUBJECT_RULE = { id: 'lookup.test_subject.found', title: 'A real test subject of yours (testSubjectEmail) is found: this rule alone reaches your own store through createRightsHandlers, which answers the canary itself.' };
 
+/** With `testSubjectEmail` too: an access request reads that subject's export, which must carry no credential (Lucida CM6). */
+const EXPORT_RULE = { id: 'requests.access.no_secrets', title: 'An access request for your test subject (testSubjectEmail) finishes, and its export carries no credential: no password, password hash, secret, API key, token or private key, by field name or by shape.' };
+
+/** Field names that hold a credential, compared lowercased with `_` and `-` removed. */
+const SECRET_FIELD = /^(password|passwd|passwordhash|passhash|hashedpassword|secret|clientsecret|apikey|apisecret|accesstoken|refreshtoken|sessiontoken|idtoken|authtoken|privatekey|totpsecret|otpsecret|mfasecret|recoverycodes|salt)$/;
+/** Values shaped like a live credential, whatever the field is called. */
+const SECRET_VALUE = /^(sk_(live|test)_|rk_(live|test)_|cmk_|ghp_|gho_|github_pat_|xox[abpr]-|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\$2[aby]\$\d\d\$|\$argon2)/;
+
+/** The paths in an export that look like credentials (never their values). */
+export function secretPaths(v: unknown, path = '$', out: string[] = []): string[] {
+  if (out.length >= 20) return out;
+  if (typeof v === 'string') { if (SECRET_VALUE.test(v.trim())) out.push(path); return out; }
+  if (Array.isArray(v)) { v.forEach((x, i) => secretPaths(x, `${path}[${i}]`, out)); return out; }
+  if (v && typeof v === 'object') {
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+      const p = `${path}.${k}`;
+      if (SECRET_FIELD.test(k.toLowerCase().replace(/[_-]/g, '')) && x !== null && x !== '' && x !== undefined) out.push(p);
+      else secretPaths(x, p, out);
+    }
+  }
+  return out;
+}
+
 /** Asked for by name: only with `eraseSubjectEmail`, because it really erases that subject. */
 const ERASE_RULE = { id: 'requests.erase.removes_subject', title: 'A real erasure of your throwaway subject (eraseSubjectEmail) finishes, and a lookup no longer finds them: this rule alone runs your own erase code.' };
 
@@ -161,7 +184,7 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
   let version: string | undefined;
 
   const set = (id: string, status: ConformanceStatus, detail?: string): void => {
-    const rule = [...CONFORMANCE_RULES, TEST_SUBJECT_RULE, ERASE_RULE].find((r) => r.id === id)!;
+    const rule = [...CONFORMANCE_RULES, TEST_SUBJECT_RULE, EXPORT_RULE, ERASE_RULE].find((r) => r.id === id)!;
     results.set(id, { id, title: rule.title, status, ...(detail ? { detail } : {}) });
   };
   const pass = (id: string) => set(id, 'pass');
@@ -234,6 +257,9 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
     const seeded = await call('POST', '/lookup', { emails: [o.testSubjectEmail] }, { 'Idempotency-Key': key('lookup-seeded') });
     if (seeded.status === 200 && field(seeded.json, 'status') === 'found') pass('lookup.test_subject.found');
     else fail('lookup.test_subject.found', `${o.testSubjectEmail}: ${said(seeded)}`);
+    const seededId = field(seeded.json, 'subjectId');
+    if (typeof seededId === 'string' && seededId) await exportRule(seededId);
+    else skip(EXPORT_RULE.id, 'needs the test subject, which the lookup did not find');
   }
 
   // A receiver that takes the two names as alternatives refuses the body every real request is sent in.
@@ -347,8 +373,39 @@ export async function runExecutorConformance(o: ConformanceOptions): Promise<Con
     else fail(rule, `the erasure said "${String(st)}", but a lookup afterwards: ${said(gone)}`);
   }
 
+  async function exportRule(subject: string): Promise<void> {
+    const rule = EXPORT_RULE.id;
+    const opened = await call('POST', '/requests', { subjectId: subject, type: 'access', caseId: `conformance-access-${run}`, reason: 'Cookie Munch conformance check (test subject export)' }, { 'Idempotency-Key': key('access') });
+    const id = field(opened.json, 'id');
+    if ((opened.status !== 200 && opened.status !== 201) || typeof id !== 'string') return fail(rule, `the access request was not accepted: ${said(opened)}`);
+    let answer = opened;
+    const deadline = Date.now() + (o.eraseTimeoutMs ?? 30_000);
+    while (['pending', 'processing'].includes(String(field(answer.json, 'status'))) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 500));
+      answer = await call('GET', `/requests/${encodeURIComponent(id)}`, undefined, { 'Idempotency-Key': key('access-get') });
+    }
+    const st = field(answer.json, 'status');
+    if (st !== 'completed' && st !== 'completed_with_retention') return fail(rule, `the access request ended as "${String(st)}", not completed`);
+    let bundle = field(answer.json, 'result');
+    const url = field(bundle, 'downloadUrl');
+    if (typeof url === 'string') {
+      try {
+        const res = await doFetch(url, { headers: { accept: 'application/json' } });
+        const text = await res.text();
+        if (text.length > 5_000_000) return fail(rule, 'the export is over 5 MB');
+        try { bundle = JSON.parse(text); } catch { bundle = text; }
+      } catch (err) {
+        return fail(rule, `the export's downloadUrl could not be read: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (bundle === undefined) return fail(rule, 'the completed access request carried no result (inline, or { downloadUrl })');
+    const found = typeof bundle === 'string' ? bundle.split(/\s+/).filter((w) => SECRET_VALUE.test(w)).map(() => '$ (text)') : secretPaths(bundle);
+    if (found.length) fail(rule, `the export carries what looks like a credential at ${[...new Set(found)].join(', ')}; leave credentials out of an access export`);
+    else pass(rule);
+  }
+
   function report(): ConformanceReport {
-    const rules = [...CONFORMANCE_RULES, ...(o.testSubjectEmail ? [TEST_SUBJECT_RULE] : []), ...(o.eraseSubjectEmail ? [ERASE_RULE] : [])].map((r) => results.get(r.id) ?? { id: r.id, title: r.title, status: 'skip' as const, detail: 'not reached' });
+    const rules = [...CONFORMANCE_RULES, ...(o.testSubjectEmail ? [TEST_SUBJECT_RULE, EXPORT_RULE] : []), ...(o.eraseSubjectEmail ? [ERASE_RULE] : [])].map((r) => results.get(r.id) ?? { id: r.id, title: r.title, status: 'skip' as const, detail: 'not reached' });
     const count = (s: ConformanceStatus) => rules.filter((r) => r.status === s).length;
     return { ok: count('fail') === 0, passed: count('pass'), failed: count('fail'), skipped: count('skip'), blocked: count('blocked'), rules, ...(version ? { version } : {}) };
   }
