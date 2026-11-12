@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.25.0';
+export const SDK_VERSION = '0.26.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -622,6 +622,8 @@ export interface ScanStatus {
   undeclared?: Array<{ name: string; domain?: string; category: string }>;
   /** Once done: declarations the scan did not see and nothing has seen for `staleAfterDays`. Reporting only. */
   stale?: Array<{ name: string; lastSeenAt: number | null }>;
+  /** Another consent platform the last crawl saw loading, by script host. Scans measure only a Cookie Munch banner. */
+  foreignCmp?: { name: string; hosts: string[] };
 }
 
 /** Consent-button parity of the banner a real browser saw on the site (see ScanStatus). */

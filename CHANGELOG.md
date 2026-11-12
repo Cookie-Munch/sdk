@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.26.0 (2026-11-12)
+
+- Added: `ScanStatus.foreignCmp` (`{ name, hosts }`): another consent platform the last crawl saw the site loading. A scan's `buttonParity` now covers only the Cookie Munch banner.
+
 ## 0.25.0 (2026-11-12)
 
 - Added: `HealthRow.key` (`check:subject`, unique in a report), and on failing rows `reason`, `fixedBy` (`you`, `cookiemunch` or a vendor id) and `ref` (the connection or scan the row is about).
