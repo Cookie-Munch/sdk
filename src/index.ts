@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.28.0';
+export const SDK_VERSION = '0.29.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -301,6 +301,8 @@ export interface DeclaredCookie extends DeclaredCookieInput {
   source?: 'import';
   /** The vendor whose preset declared it. */
   vendor?: string;
+  /** Your own row only: a vendor preset applied here also declares this name; yours is published in its place. */
+  shadows?: string;
   /** The `purposes` languages that are machine translations (sites.translateCookies); absent = all human-written. */
   machinePurposes?: string[];
 }
@@ -507,6 +509,10 @@ export interface CookiePresetResult {
   vendor: CookiePresetVendor | (string & {});
   /** `builtin` (Cookie Munch's own rows, also while the vendor's manifest is invalid), `manifest` (its valid embed manifest), or `instance`. */
   source?: 'builtin' | 'manifest' | 'instance';
+  /** With `source: "builtin"`: the built-in rows' revision (`builtin:<hash>`); it changes only when what the preset declares here does. */
+  revision?: string;
+  /** What moved at the vendor since this site last applied the preset (a manifest or instance). An instance's revision is `instance:<hash>`. */
+  upstream?: { applied: string | null; latest: string };
   cookies: DeclaredCookie[];
   removed: string[];
   skipped?: Array<{ name: string; reason: string }>;

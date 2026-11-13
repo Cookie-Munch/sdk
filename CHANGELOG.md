@@ -2,6 +2,11 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.29.0 (2026-11-13)
+
+- Added: `DeclaredCookie.shadows`: on your own row, the vendor whose applied preset also declares that name.
+- Added: `CookiePresetResult.revision` (built-in rows, `builtin:<hash>`) and `CookiePresetResult.upstream` (`{ applied, latest }`; an instance's revision is `instance:<hash>`).
+
 ## 0.28.0 (2026-11-13)
 
 - Added: `cacheStorage` in `StorageType`, `CookieSuggestion.storage` and manifest storage types: a row naming a Cache Storage cache (a service worker's offline copy).
