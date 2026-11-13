@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.30.0 (2026-11-13)
+
+- Added: `CookiePresetResult.shadowed`: the rows the preset declares that your own rows hide, as it would publish them.
+
 ## 0.29.0 (2026-11-13)
 
 - Added: `DeclaredCookie.shadows`: on your own row, the vendor whose applied preset also declares that name.
