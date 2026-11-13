@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.28.0 (2026-11-13)
+
+- Added: `cacheStorage` in `StorageType`, `CookieSuggestion.storage` and manifest storage types: a row naming a Cache Storage cache (a service worker's offline copy).
+
 ## 0.27.0 (2026-11-12)
 
 - Added: `PartnerLink.lastIgnoredAt` and `lastIgnoredReason`: the partner took the last delivery but answered `{ ignored: true }`.

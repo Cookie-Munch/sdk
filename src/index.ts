@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.27.0';
+export const SDK_VERSION = '0.28.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -245,7 +245,7 @@ export interface CategorizedCookie {
 
 /** What a declaration row describes. */
 /** `none`: a cookieless processor (an analytics beacon) declared so the policy names it; nothing is stored. */
-export type StorageType = 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB' | 'none';
+export type StorageType = 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB' | 'cacheStorage' | 'none';
 
 /** A cookie the site owner retired: the site renamed or stopped setting it. */
 export interface RetiredCookie {
@@ -384,7 +384,7 @@ export type CustomPresetInput = ({ url: string; manifest?: never } | { manifest:
 /** One suggestion in GET /v1/sites/:cbid/cookies/suggestions. */
 export interface CookieSuggestion {
   name: string;
-  storage: 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB';
+  storage: 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB' | 'cacheStorage';
   foundOnPages: string[];
   /** `denied`: a crawl saw it before any consent; `granted`: after accepting all. */
   consentStates?: Array<'denied' | 'granted'>;
@@ -448,7 +448,7 @@ export interface CookiePresetParams {
 /** One browser key a surface writes, in an embed manifest. */
 export interface EmbedManifestStorage {
   name: string;
-  type: 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB';
+  type: 'cookie' | 'localStorage' | 'sessionStorage' | 'indexedDB' | 'cacheStorage';
   category: string;
   /** `session`, `persistent` or a duration such as `365d`. */
   lifetime?: string;
