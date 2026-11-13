@@ -13,7 +13,8 @@ Every published release, newest first. Dates are the day the version was cut.
 
 ## 0.26.0 (2026-11-12)
 
-- Added: `ScanStatus.foreignCmp` (`{ name, hosts }`): another consent platform the last crawl saw the site loading. A scan's `buttonParity` now covers only the Cookie Munch banner.
+- Added: `ScanStatus.foreignCmp` (`{ name, hosts }`): another consent platform the last crawl saw the site loading.
+- Changed: a scan's `buttonParity` covers only the Cookie Munch banner. Code that read it as any banner's buttons should read `foreignCmp` for another platform's.
 
 ## 0.25.0 (2026-11-12)
 
@@ -28,6 +29,7 @@ Every published release, newest first. Dates are the day the version was cut.
 
 ## 0.23.0 (2026-11-11)
 
+- Changed: `DsarCaseStatus` and case tasks can be `blocked` (`blocked: { reason, message }`). Code that switches on the status needs a branch for it: the request waits for the person, not for you.
 - Added: the `blocked` rights status. A callback answers `{ status: 'blocked', blocked: { reason, message } }` when the person must act first, and `status` is asked again on each read. `DsarCaseStatus` and case tasks carry `blocked`.
 - Added: conformance rule `requests.access.no_secrets` (with `testSubjectEmail`): the test subject's export must hold no credential.
 - Added: `orgs.createDryRun` (`POST /v1/orgs?dryRun=1`), with an optional `provision` plan.
