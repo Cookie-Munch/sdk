@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.31.0 (2026-11-14)
+
+- Added: `CookiePreset.appliedRevision`, `appliedAt`, `latestRevision`, `latestAt` in `sites.cookiePresets()`: the revision a preset's rows came from against what the vendor's source answers now. Chatly's storage declaration is named by its own `version` (`instance:<version>`).
+
 ## 0.30.0 (2026-11-13)
 
 - Added: `CookiePresetResult.shadowed`: the rows the preset declares that your own rows hide, as it would publish them.

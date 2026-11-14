@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.30.0';
+export const SDK_VERSION = '0.31.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -502,6 +502,12 @@ export interface CookiePreset {
   /** An applied preset: names the site was seen writing under the vendor's prefixes that nothing declares. */
   incomplete?: string[];
   manifest: CookiePresetManifest;
+  /** A first-class preset this site applied: the revision its rows came from (`instance:<version>` for Chatly's storage declaration). */
+  appliedRevision?: string;
+  appliedAt?: string;
+  /** What the vendor's instance source answered at its last hourly read; differs from `appliedRevision` when the vendor changed. */
+  latestRevision?: string;
+  latestAt?: string;
 }
 
 /** What applying a preset declared. */
