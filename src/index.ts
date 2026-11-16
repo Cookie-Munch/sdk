@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.31.0';
+export const SDK_VERSION = '0.32.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -562,13 +562,18 @@ export interface DeclarationDiff {
 export interface CookiePlanInput {
   cookies?: Array<DeclaredCookieInput & { name: string }>;
   replace?: boolean;
-  /** Vendor → its params, applied in key order, each seeing the steps before it. `custom` takes the body of `PUT …/cookies/presets/custom`. */
+  /** Own rows to give to a preset in `presets` that declares the same name: removed in the cookies step, declared by the preset. Each must end up declared by a preset, or the run is refused. */
+  handOver?: string[];
+  /** Vendor → its params, applied in key order, each seeing the steps before it. `custom` takes the body of `PUT …/cookies/presets/custom` (plan only). */
   presets?: Partial<Record<CookiePresetVendor, CookiePresetParams>> & { custom?: CustomPresetInput };
 }
 
-/** What the steps, in order, would produce. Nothing was stored. */
+/** What the steps, in order, would produce (`planCookies`: nothing stored) or did store (`applyCookies`). */
 export interface CookiePlanResult {
-  dryRun: true;
+  /** Set by `planCookies`. */
+  dryRun?: true;
+  /** Set by `applyCookies`. */
+  applied?: true;
   /** Each step's own dry-run answer, plus `step` (`cookies` or `presets.<vendor>`) and its diff against the step before. */
   steps: Array<{ step: string; diff: DeclarationDiff; [k: string]: unknown }>;
   declared: DeclaredCookie[];
@@ -2704,6 +2709,11 @@ export interface CookieMunchClient {
      * preset in `presets` in key order, against one scratch copy — exactly what the real calls in that order produce.
      */
     planCookies(cbid: string, input: CookiePlanInput): Promise<CookiePlanResult>;
+    /**
+     * Apply what `planCookies` shows, all or nothing: the same steps on a scratch copy, stored only when every
+     * step (and the `handOver` check) passes, each preset registered as its PUT would. A refusal stores nothing.
+     */
+    applyCookies(cbid: string, input: CookiePlanInput): Promise<CookiePlanResult>;
     snippet(cbid: string, opts?: SnippetOptions): Promise<InstallSnippet>;
     /**
      * Mint a short-lived signed token to see the banner as a visitor in a given region and
@@ -3560,6 +3570,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
           diff?: DeclarationDiff;
         }>,
       planCookies: (cbid, input) => request('POST', `/sites/${enc(cbid)}/cookies/plan`, input) as Promise<CookiePlanResult>,
+      applyCookies: (cbid, input) => request('POST', `/sites/${enc(cbid)}/cookies/apply`, input) as Promise<CookiePlanResult>,
       snippet: (cbid, opts) =>
         get(`/sites/${enc(cbid)}/snippet${qs({ blockingmode: opts?.blockingMode, culture: opts?.culture })}`) as Promise<InstallSnippet>,
       previewToken: (cbid, o) => request('POST', `/sites/${enc(cbid)}/preview-token`, o ?? {}) as Promise<PreviewToken>,

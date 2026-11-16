@@ -2,6 +2,12 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.32.0 (2026-11-16)
+
+- Added: `sites.applyCookies(cbid, input)`, `POST /v1/sites/{cbid}/cookies/apply`: what `planCookies` shows, stored all or nothing.
+- Added: `handOver` on `CookiePlanInput`: own rows to give to a preset in the same run.
+- Changed: `CookiePlanResult.dryRun` is optional; `applyCookies` answers `applied: true` instead.
+
 ## 0.31.0 (2026-11-14)
 
 - Added: `CookiePreset.appliedRevision`, `appliedAt`, `latestRevision`, `latestAt` in `sites.cookiePresets()`: the revision a preset's rows came from against what the vendor's source answers now. Chatly's storage declaration is named by its own `version` (`instance:<version>`).
