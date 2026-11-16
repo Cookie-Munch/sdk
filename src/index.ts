@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.33.0';
+export const SDK_VERSION = '0.34.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -125,6 +125,11 @@ export interface StandardPartnerLink {
   last_used_at: string | null;
   calls_30d: number;
   status: 'active' | 'waiting_on_partner' | 'revoked' | 'expired';
+  externalId?: string;
+  label?: string;
+}
+/** PATCH a partner link in place (CM-17): one or both. Scopes and events cannot change in place. */
+export interface PartnerLinkUpdate {
   externalId?: string;
   label?: string;
 }
@@ -2527,6 +2532,8 @@ export interface CookieMunchClient {
     list(opts?: MetadataFilter): Promise<StandardPartnerLink[]>;
     create(input: StandardPartnerLinkCreate): Promise<StandardPartnerLink>;
     revoke(id: string): Promise<StandardPartnerLink>;
+    /** Fix a link's externalId or label in place, keeping the grant. `warnings` names executor keys to re-mint. */
+    update(id: string, input: PartnerLinkUpdate, opts?: { dryRun?: boolean }): Promise<StandardPartnerLink & { change: 'updated' | 'unchanged'; dryRun?: true; warnings?: string[] }>;
   };
   /** What `env` writes for a product provisioned with this stack ref: names, values, secret references. */
   provisionEnv(ref: string): Promise<ProvisionEnv>;
@@ -2548,6 +2555,8 @@ export interface CookieMunchClient {
     linkPartner(cbid: string, input: PartnerLinkCreate, opts?: { dryRun?: boolean }): Promise<{ change: 'created' | 'updated' | 'unchanged'; link: PartnerLink; dryRun?: true }>;
     /** Revoke a partner link: deliveries stop at once. */
     unlinkPartner(cbid: string, linkId: string): Promise<{ link: PartnerLink }>;
+    /** Fix a site link's externalId or label in place, keeping the grant. `warnings` names executor keys to re-mint. */
+    updatePartner(cbid: string, linkId: string, input: PartnerLinkUpdate, opts?: { dryRun?: boolean }): Promise<{ change: 'updated' | 'unchanged'; link: PartnerLink; dryRun?: true; warnings?: string[] }>;
     getConfig(cbid: string): Promise<SiteConfig>;
     /**
      * Replaces the whole config — a top-level field you omit reverts to its default. With
@@ -3451,6 +3460,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       list: (o) => get(`/partner_links${metaQs(o)}`) as Promise<StandardPartnerLink[]>,
       create: (input) => request('POST', '/partner_links', input) as Promise<StandardPartnerLink>,
       revoke: (id) => request('DELETE', `/partner_links/${enc(id)}`) as Promise<StandardPartnerLink>,
+      update: (id, input, o) => request('PATCH', `/partner_links/${enc(id)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as never,
     },
     provisionEnv: (ref) => get(`/provision/env${qs({ ref })}`) as Promise<ProvisionEnv>,
     sites: {
@@ -3466,6 +3476,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       linkPartner: (cbid, input, o) =>
         request('POST', `/sites/${enc(cbid)}/partners${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<{ change: 'created' | 'updated' | 'unchanged'; link: PartnerLink; dryRun?: true }>,
       unlinkPartner: (cbid, linkId) => request('DELETE', `/sites/${enc(cbid)}/partners/${enc(linkId)}`) as Promise<{ link: PartnerLink }>,
+      updatePartner: (cbid, linkId, input, o) => request('PATCH', `/sites/${enc(cbid)}/partners/${enc(linkId)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as never,
       getConfig: (cbid) => get(`/sites/${enc(cbid)}/config`) as Promise<SiteConfig>,
       putConfig: (cbid, config, opts) =>
         request('PUT', `/sites/${enc(cbid)}/config${qs({ keep: opts?.keep })}`, config) as Promise<SiteConfig>,
