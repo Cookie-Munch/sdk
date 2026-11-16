@@ -101,7 +101,7 @@ export interface RightsStore {
 export const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60;
 
 export interface RightsHandlersOptions {
-  /** The key Cookie Munch sends as `Authorization: Bearer <key>`. */
+  /** The key Cookie Munch sends as `Authorization: Bearer <key>`; at least 24 characters. */
   key: string;
   /** Signs request ids; at least 32 characters, the same on every instance and across restarts. */
   idSecret: string;
@@ -125,7 +125,7 @@ export interface RightsHandlersOptions {
   /**
    * Default: in memory, which a restart empties. A scheduled erasure whose state is gone is never
    * run (it answers `rejected`), so give production a durable store: `fileStore(dir)`,
-   * `sqlStore({ query })` or `redisStore(client)`.
+   * `sqlStore({ query })`, `redisStore(client)` or `ioredisStore(client)`.
    */
   store?: RightsStore;
   now?: () => number;
@@ -218,6 +218,8 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   if (typeof o.key !== 'string' || !o.key) throw new Error('createRightsHandlers: key is required');
+  // A warning, not a throw: Cookie Munch has accepted 8-character keys, and an SDK upgrade must not take a working rights endpoint down.
+  if (o.key.length < 24) console.warn('createRightsHandlers: key is shorter than 24 characters; rotate it to a longer one (PATCH /v1/dsar/executors/{id} {secretKey}) so it cannot be guessed');
   if (typeof o.idSecret !== 'string' || o.idSecret.length < 32) throw new Error('createRightsHandlers: idSecret must be at least 32 characters');
   if (typeof o.lookup !== 'function') throw new Error('createRightsHandlers: lookup is required');
   const subtle = globalThis.crypto?.subtle;
@@ -633,6 +635,27 @@ export function redisStore(client: RightsRedisClient): DurableStore {
     get: (key) => client.get(k(key)),
     async set(key, value, opts) {
       await (opts?.ttlSeconds ? client.set(k(key), value, { EX: opts.ttlSeconds }) : client.set(k(key), value));
+    },
+    async delete(key) {
+      await client.del(k(key));
+    },
+  };
+}
+
+/** The part of an ioredis client `ioredisStore` uses: `set(key, value, 'EX', seconds)`. */
+export interface RightsIoredisClient {
+  get(key: string): Promise<string | null | undefined>;
+  set(key: string, value: string, ex?: 'EX', seconds?: number): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+}
+
+/** `redisStore` for ioredis: the same keys, the TTL passed as `'EX', seconds`. */
+export function ioredisStore(client: RightsIoredisClient): DurableStore {
+  const k = (key: string) => `cookiemunch:rights:${key}`;
+  return {
+    get: (key) => client.get(k(key)),
+    async set(key, value, opts) {
+      await (opts?.ttlSeconds ? client.set(k(key), value, 'EX', opts.ttlSeconds) : client.set(k(key), value));
     },
     async delete(key) {
       await client.del(k(key));

@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.32.0';
+export const SDK_VERSION = '0.33.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -3956,4 +3956,19 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       publish: (id) => request('POST', `/banners/${enc(id)}/publish`) as Promise<{ publishedCbids: string[] }>,
     },
   };
+}
+
+/**
+ * The account-link URL for a person your server has verified is signed in (CM-14): wraps
+ * `rightsLinks.create` (POST /v1/sites/{cbid}/rights-links) and answers just the `url`. Pass a client,
+ * or the options to build one with a `dsar:rights-links` (or `dsar:write`) key. Call it from a route
+ * that reads the subject from your own session, never from the browser's input.
+ */
+export async function rightsLink(
+  clientOrOptions: Pick<CookieMunchClient, 'rightsLinks'> | CookieMunchOptions,
+  input: RightsLinkInput & { cbid: string },
+): Promise<string> {
+  const client = 'rightsLinks' in clientOrOptions ? clientOrOptions : createCookieMunch(clientOrOptions);
+  const { cbid, ...body } = input;
+  return (await client.rightsLinks.create(cbid, body)).url;
 }

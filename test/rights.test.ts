@@ -8,10 +8,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { createRightsHandlers, fileStore, sqlStore, redisStore, RIGHTS_STORE_TABLE_SQL, RIGHTS_STORE_TABLE_SQLITE, type RightsHandlersOptions } from '../src/rights.js';
+import { createRightsHandlers, fileStore, sqlStore, redisStore, ioredisStore, RIGHTS_STORE_TABLE_SQL, RIGHTS_STORE_TABLE_SQLITE, type RightsHandlersOptions } from '../src/rights.js';
 import { runExecutorConformance, CONFORMANCE_RULES } from '../src/executor-conformance.js';
 
-const key = 'sk_exec_0123456789abcdef';
+const key = 'sk_exec_0123456789abcdef0123';
 const idSecret = 'id-secret-0123456789abcdef0123456789';
 const canaryEmail = 'canary-0123456789abcdef@canary.cookiemunch.net';
 const T0 = Date.UTC(2026, 10, 1);
@@ -254,6 +254,12 @@ describe('createRightsHandlers', () => {
   it('refuses weak options at construction', () => {
     expect(() => createRightsHandlers({ key, idSecret: 'short', lookup: () => null })).toThrow(/idSecret/);
     expect(() => createRightsHandlers({ key: '', idSecret, lookup: () => null })).toThrow(/key/);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(() => createRightsHandlers({ key: 'k'.repeat(23), idSecret, lookup: () => null })).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/shorter than 24 characters/));
+    warn.mockRestore();
+    expect(() => createRightsHandlers({ key, idSecret: 'x'.repeat(31), lookup: () => null })).toThrow(/idSecret must be at least 32/);
+    expect(() => createRightsHandlers({ key: 'k'.repeat(24), idSecret: 'x'.repeat(32), lookup: () => null })).not.toThrow();
   });
 
   it('fileStore: a scheduled erasure survives a restart and runs on the first /run after executeAfter', async () => {
@@ -360,6 +366,21 @@ describe('createRightsHandlers', () => {
     expect(r).toEqual([
       ['set', 'cookiemunch:rights:req:a', 'x'],
       ['set', 'cookiemunch:rights:idem:b', 'y', { EX: 60 }],
+      ['get', 'cookiemunch:rights:req:a'],
+      ['del', 'cookiemunch:rights:idem:b'],
+    ]);
+  });
+
+  it("ioredisStore passes the TTL as 'EX', seconds", async () => {
+    const r: unknown[][] = [];
+    const redis = ioredisStore({ get: async (k) => (r.push(['get', k]), 'v'), set: async (...a) => r.push(['set', ...a]), del: async (k) => r.push(['del', k]) });
+    await redis.set('req:a', 'x');
+    await redis.set('idem:b', 'y', { ttlSeconds: 60 });
+    expect(await redis.get('req:a')).toBe('v');
+    await redis.delete('idem:b');
+    expect(r).toEqual([
+      ['set', 'cookiemunch:rights:req:a', 'x'],
+      ['set', 'cookiemunch:rights:idem:b', 'y', 'EX', 60],
       ['get', 'cookiemunch:rights:req:a'],
       ['del', 'cookiemunch:rights:idem:b'],
     ]);
