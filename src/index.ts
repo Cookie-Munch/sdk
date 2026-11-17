@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.34.0';
+export const SDK_VERSION = '0.35.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -3051,6 +3051,8 @@ export interface CookieMunchClient {
     task(requestId: string, taskId: string): Promise<DsarTask>;
     /** Approve an erasure awaiting approval: it is sent now. Audited with your key. 409 when it is not waiting. */
     approveTask(requestId: string, taskId: string): Promise<DsarTask>;
+    /** Send a failed task again once its system is fixed: a new request upstream; an erasure needing approval waits for it again. 409 unless failed and the request in progress. Audited. */
+    retryTask(requestId: string, taskId: string): Promise<DsarTask>;
     /** Reject an erasure awaiting approval: nothing is sent and the task fails with `reason`. Audited. */
     rejectTask(requestId: string, taskId: string, opts?: { reason?: string }): Promise<DsarTask>;
     /**
@@ -3787,6 +3789,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       taskExport: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}/export`) as Promise<DsarTaskExport>,
       task: (requestId, taskId) => get(`/dsar/${enc(requestId)}/tasks/${enc(taskId)}`) as Promise<DsarTask>,
       approveTask: (requestId, taskId) => request('POST', `/dsar/${enc(requestId)}/tasks/${enc(taskId)}/approve`) as Promise<DsarTask>,
+      retryTask: (requestId, taskId) => request('POST', `/dsar/${enc(requestId)}/tasks/${enc(taskId)}/retry`) as Promise<DsarTask>,
       rejectTask: (requestId, taskId, o = {}) =>
         request('POST', `/dsar/${enc(requestId)}/tasks/${enc(taskId)}/reject`, o.reason !== undefined ? { reason: o.reason } : {}) as Promise<DsarTask>,
       testExecutor: (id, input) => request('POST', `/dsar/executors/${enc(id)}/test`, input) as Promise<ExecutorTestResult>,
