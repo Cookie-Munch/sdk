@@ -2,6 +2,26 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.35.1 (2026-11-18)
+
+- Fixed: `ioredisStore` accepts a real ioredis `Redis` instance: `RightsIoredisClient.set` declares ioredis's two overloads.
+- Added: `mint` on a connection (`DsarExecutor`), and `completed_with_errors` in `DsarCaseStatus`.
+
+## 0.35.0 (2026-11-17)
+
+- Added: `fulfillment.retryTask(requestId, taskId)`, `POST /v1/dsar/{id}/tasks/{taskId}/retry`; `retries` on a task.
+
+## 0.34.0 (2026-11-16)
+
+- Added: `partnerLinks.update` and `sites.updatePartner`: edit a link's `externalId` or `label` in place.
+- Added: `externalIdLabel` and `requiredScopes` on partner catalogue entries.
+
+## 0.33.0 (2026-11-16)
+
+- Added: `@cookiemunch/sdk/rights/express`, `expressRights(handlers)` middleware (raw body only).
+- Added: `ioredisStore(client)` and `rightsLink(client, { cbid, subject })`.
+- Changed: `createRightsHandlers` warns on an executor key shorter than 24 characters (it does not refuse to start).
+
 ## 0.32.0 (2026-11-16)
 
 - Added: `sites.applyCookies(cbid, input)`, `POST /v1/sites/{cbid}/cookies/apply`: what `planCookies` shows, stored all or nothing.

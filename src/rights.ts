@@ -645,7 +645,9 @@ export function redisStore(client: RightsRedisClient): DurableStore {
 /** The part of an ioredis client `ioredisStore` uses: `set(key, value, 'EX', seconds)`. */
 export interface RightsIoredisClient {
   get(key: string): Promise<string | null | undefined>;
-  set(key: string, value: string, ex?: 'EX', seconds?: number): Promise<unknown>;
+  // Two overloads, as ioredis declares them, so a real `Redis` instance type-checks (one signature with optionals does not).
+  set(key: string, value: string): Promise<unknown>;
+  set(key: string, value: string, ex: 'EX', seconds: number): Promise<unknown>;
   del(key: string): Promise<unknown>;
 }
 
