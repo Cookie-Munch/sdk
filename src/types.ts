@@ -207,7 +207,7 @@ export interface ProvisionResult {
   checklist?: string[];
 }
 
-/** A partner the deployment knows: built in (forumulate, atlas, chatly, referalli, hermetica) or any other registered on it. */
+/** A partner the deployment knows: built in (forumulate, atlas, chatly, referalli, hermetica, lucida) or any other registered on it. */
 export type PartnerId = 'forumulate' | 'atlas' | 'chatly' | 'referalli' | 'hermetica' | (string & {});
 export interface PartnerLinkCreate {
   partner: PartnerId;
@@ -387,7 +387,7 @@ export interface DsarCaseCreate {
   controller?: string;
 }
 
-export type DsarCaseStatus = 'pending' | 'scheduled' | 'processing' | 'blocked' | 'completed' | 'completed_with_retention' | 'rejected' | 'cancelled';
+export type DsarCaseStatus = 'pending' | 'scheduled' | 'processing' | 'blocked' | 'completed' | 'completed_with_retention' | 'completed_with_errors' | 'rejected' | 'cancelled';
 
 export interface RetentionLine {
   category: string;

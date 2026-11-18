@@ -2077,6 +2077,8 @@ export interface DsarExecutor {
   presetLatestVersion?: number;
   /** The non-secret params it was built with, e.g. `{ orgId }`. */
   presetParams?: Record<string, string>;
+  /** Present when a partner minted the stored key (`mintFrom`); absent: a key pasted in. PATCH `{ mintFrom }` replaces a pasted key with a minted one. */
+  mint?: { partner: string; externalId?: string };
   /** How the stored address and profile differ from what its preset version builds. Empty: unmodified. */
   presetDiff?: ConfigChange[];
   /** Preset-built: profile fields you removed or changed by hand; `upgradeExecutorPreset` keeps them. */
