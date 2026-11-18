@@ -12,6 +12,7 @@ export default defineConfig({
       { find: /^@cookiemunch\/sdk\/consent$/, replacement: here('./src/consent.ts') },
       { find: /^@cookiemunch\/sdk\/rights$/, replacement: here('./src/rights.ts') },
       { find: /^@cookiemunch\/sdk\/rights\/express$/, replacement: here('./src/rights/express.ts') },
+      { find: /^@cookiemunch\/sdk\/rights\/fastify$/, replacement: here('./src/rights/fastify.ts') },
       { find: /^@cookiemunch\/sdk\/embed$/, replacement: here('./src/embed.ts') },
     ],
   },

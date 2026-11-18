@@ -29,6 +29,7 @@
  * them as it answers any unknown path.
  */
 import type { RightsHandlers } from '../rights.js';
+import { OWNED, headersOf } from './shared.js';
 
 /** The parts of an Express / Connect / Node request this reads. */
 export interface ExpressLikeRequest extends AsyncIterable<Uint8Array | string> {
@@ -52,9 +53,6 @@ export interface ExpressLikeResponse {
 }
 
 export type ExpressNext = (err?: unknown) => void;
-
-// The same tail createRightsHandlers routes on; anything else is not ours and is never read.
-const OWNED = /\/(lookup|requests)(?:\/[^/]+(?:\/(cancel|run))?)?\/*$/;
 
 export const RAW_BODY_REQUIRED =
   '@cookiemunch/sdk/rights/express: req.body was already parsed into an object and no raw bytes are available. '
@@ -94,14 +92,7 @@ export function expressRights(handlers: Pick<RightsHandlers, 'fetch'>) {
 
     let response: Response;
     try {
-      const headers = new Headers();
-      for (const [k, v] of Object.entries(req.headers)) {
-        if (v === undefined) continue;
-        if (Array.isArray(v)) {
-          if (k.toLowerCase() === 'set-cookie') for (const one of v) headers.append(k, one);
-          else headers.set(k, v.join(', '));
-        } else headers.set(k, v);
-      }
+      const headers = headersOf(req.headers);
       const method = (req.method ?? 'GET').toUpperCase();
       const body = method === 'GET' || method === 'HEAD' ? undefined : await bodyOf(req);
       response = await handlers.fetch(new Request(url, { method, headers, ...(body !== undefined ? { body: body as BodyInit } : {}) }));

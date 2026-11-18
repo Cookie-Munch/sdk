@@ -2,6 +2,10 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.36.0 (2026-11-18)
+
+- Added: `@cookiemunch/sdk/rights/fastify`, a Fastify (v4/v5) plugin for the rights handlers: `app.register(fastifyRights(handlers), { prefix: '/privacy' })`. It reads request bodies as raw bytes inside its own scope, so signatures verify and the rest of the app keeps its JSON parser.
+
 ## 0.35.1 (2026-11-18)
 
 - Fixed: `ioredisStore` accepts a real ioredis `Redis` instance: `RightsIoredisClient.set` declares ioredis's two overloads.
