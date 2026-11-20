@@ -3105,13 +3105,13 @@ export interface CookieMunchClient {
     issue(input?: ApiKeyIssueInput): Promise<ApiKeyIssued>;
     /** Revoke a key by its prefix. Immediate. */
     revoke(prefix: string): Promise<void>;
-    /** Account key (`orgs:keys`): list another org's key prefixes. Same answer as `list()`. */
+    /** Full-access or account key (`orgs:keys`): list another org's key prefixes. Same answer as `list()`. */
     listInOrg(orgId: string): Promise<ApiKeyPrefix[]>;
-    /** Account key (`orgs:keys`): mint a scoped key in another org of the same account. `scopes` is required. */
+    /** Full-access or account key (`orgs:keys`): mint a key in another org of the same account. `scopes` is required with an account key. */
     createInOrg(orgId: string, input: ApiKeyIssueInput): Promise<ApiKeyIssued>;
-    /** Account key (`orgs:keys`): update a key in another org. Same body and answer as `update()`. */
+    /** Full-access or account key (`orgs:keys`): update a key in another org. Same body and answer as `update()`. */
     updateInOrg(orgId: string, prefix: string, patch: ApiKeyUpdate): Promise<{ ok: true }>;
-    /** Account key (`orgs:keys`): revoke a key in another org. Immediate. */
+    /** Full-access or account key (`orgs:keys`): revoke a key in another org. Immediate. */
     revokeInOrg(orgId: string, prefix: string): Promise<void>;
     /** Rotate a key: a new secret, returned once, with the same scopes, lock and expiry. The old one stops working. */
     roll(prefix: string): Promise<ApiKeyIssued>;
