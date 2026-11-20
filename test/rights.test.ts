@@ -179,7 +179,7 @@ describe('createRightsHandlers', () => {
     const opened = await (await call('POST', '/requests', { subjectId: 'u1', type: 'access', caseId: 'c' })).json();
     const [v, payload, sig] = (opened.id as string).split('.');
     const forgedPayload = btoa(JSON.stringify({ s: 'u2', t: 'deletion', y: 'deletion', c: 'c', n: 'x' })).replace(/=+$/, '');
-    for (const id of ['req_1', `${v}.${forgedPayload}.${sig}`, `${v}.${payload}.${sig!.slice(0, -2)}AA`]) {
+    for (const id of ['req_1', `${v}.${forgedPayload}.${sig}`, `${v}.${payload}.${sig!.slice(0, -1)}${sig!.endsWith('A') ? 'B' : 'A'}`]) {
       const res = await call('GET', `/requests/${encodeURIComponent(id)}`);
       expect(res.status).toBe(404);
       expect(res.headers.get('x-version')).toBe('2');
