@@ -576,7 +576,8 @@ export const RIGHTS_STORE_TABLE_SQLITE = `CREATE TABLE IF NOT EXISTS cookiemunch
  * `dialect: 'sqlite'`). `query(sql, params)` runs a parameterised statement and answers `{ rows }` or the
  * rows: `pool.query` from `pg` as it is; for better-sqlite3 (and Drizzle's `db.$client`),
  * `(sql, p) => { const s = db.prepare(sql); return Promise.resolve(s.reader ? s.all(...p) : (s.run(...p), [])); }`.
- * An expired row reads as missing; expired rows are purged by the next write that carries a TTL.
+ * `query` answers the rows for a SELECT; for a write (INSERT … ON CONFLICT, DELETE) its answer is ignored.
+ * Prisma: use `prismaStore(prisma)`. An expired row reads as missing; expired rows are purged by the next write that carries a TTL.
  */
 export function sqlStore(o: { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] } | unknown[]>; dialect?: 'postgres' | 'sqlite' }): DurableStore {
   const rows = async (sql: string, params: unknown[]) => {
@@ -619,6 +620,38 @@ export function sqlStore(o: { query: (sql: string, params: unknown[]) => Promise
       await rows('DELETE FROM cookiemunch_rights_store WHERE key = $1', [key]);
     },
   };
+}
+
+/**
+ * The `sqlStore` table as a Prisma model (Postgres). Paste it into `schema.prisma`, so `prisma db push` and
+ * `migrate` create and keep it; a table made with `RIGHTS_STORE_TABLE_SQL` outside the schema is dropped by
+ * the next `db push` (LinkHub CM-L2).
+ */
+export const RIGHTS_STORE_PRISMA_MODEL = `model CookiemunchRightsStore {
+  key       String    @id
+  value     String
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+
+  @@map("cookiemunch_rights_store")
+}`;
+
+/** The part of a Prisma client `prismaStore` uses. */
+export interface RightsPrismaClient {
+  $queryRawUnsafe(sql: string, ...params: unknown[]): Promise<unknown>;
+  $executeRawUnsafe(sql: string, ...params: unknown[]): Promise<unknown>;
+}
+
+/**
+ * `sqlStore` over a Prisma client on Postgres (model: `RIGHTS_STORE_PRISMA_MODEL`). Reads go through
+ * `$queryRawUnsafe`; writes through `$executeRawUnsafe`, which is what Prisma means for them. This is the
+ * whole contract of `sqlStore`'s `query`: answer the rows for a SELECT, and anything (here `[]`) for a write.
+ */
+export function prismaStore(prisma: RightsPrismaClient): DurableStore {
+  return sqlStore({
+    query: async (sql, params) => (/^\s*select\b/i.test(sql)
+      ? ((await prisma.$queryRawUnsafe(sql, ...params)) as unknown[])
+      : (await prisma.$executeRawUnsafe(sql, ...params), [])),
+  });
 }
 
 /** The part of a Redis client `redisStore` uses: node-redis v4's shape, `set(key, value, { EX })`. */
