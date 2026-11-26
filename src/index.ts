@@ -62,7 +62,7 @@ import type { ConformanceReport } from './executor-conformance.js';
  * This package's version, sent in the default User-Agent. Cloudflare answers a request with
  * no recognisable User-Agent with `403 error code: 1010`; a test pins this to package.json.
  */
-export const SDK_VERSION = '0.38.0';
+export const SDK_VERSION = '0.39.0';
 
 export interface CookieMunchOptions {
   apiKey: string;
@@ -698,6 +698,8 @@ export interface AbResult {
 export interface InstallSnippet {
   /** The exact `<script>` tag to paste into `<head>`. */
   snippet: string;
+  /** The same tag as attributes, in order and unescaped: set exactly these on a `<script>` your loader creates. */
+  attributes: Record<string, string>;
   /** URL of the consent.js embed file (the embed/CDN origin). */
   src: string;
   /** The API origin (beacons + consent-tcf.js). Present when the server reports it. */
@@ -774,12 +776,77 @@ export interface DsarCreateDryRun {
 }
 
 /** What a config write would do (`?dryRun=1`) — nothing is saved. */
+/** A tenant: a site for one of your customers, who is the controller for its own visitors (POST /v1/sites/{cbid}/tenants). */
+export interface Tenant {
+  tenantCbid: string;
+  cbid: string;
+  /** The parent site's cbid. */
+  parent: string;
+  /** Your id for this customer, unique per parent. */
+  externalId: string;
+  /** A path tenant's path on your host. */
+  path?: string;
+  domain: string;
+  name?: string;
+  aliases?: string[];
+  verified: boolean;
+  rightsPageUrl: string;
+  /** What the tenant's pages put on the embed tag: data-cbid, and data-scope-path for a path tenant. */
+  snippetAttributes: Record<string, string>;
+  /** On a create: the externalId already had a tenant. */
+  existing?: boolean;
+  warnings?: Array<{ code: string; message: string }>;
+}
+
+export interface TenantInput {
+  externalId: string;
+  name?: string;
+  /** A path tenant on your own host, such as `/ana`. Send `path` or `domains`. */
+  path?: string;
+  /** A tenant with a domain of its own: the first is its domain, the rest aliases. */
+  domains?: string[];
+  /** The customer as controller for their visitors. */
+  controller?: { name: string; email?: string; url?: string; address?: string; [k: string]: unknown };
+  /** Copied from the parent at creation. Default all three. */
+  inherit?: Array<'banner' | 'categories' | 'cookies'>;
+}
+
+export interface TenantPage { tenants: Tenant[]; nextCursor: string | null; total: number }
+
+/** POST /v1/sites/{cbid}/move. */
+export interface SiteMoveInput {
+  /** The new host (no scheme or path). */
+  to: string;
+  /** The old host. Default: the site's domain. */
+  from?: string;
+  /** Keep the old domain as an alias. Default true. */
+  keepOld?: boolean;
+  /** Days sessions from the old sign-in issuer keep verifying (0–30). Default 14. */
+  trustOldDays?: number;
+}
+export interface SiteMoveResult {
+  dryRun?: true;
+  /** False when a step was refused; call again after fixing it. */
+  ok: boolean;
+  from: string;
+  to: string;
+  changes: Array<{ resource: 'site' | 'config' | 'rightsIdentity' | 'executor'; id?: string; field: string; before: unknown; after: unknown }>;
+  steps: Array<{ resource: string; id?: string; status: number; error?: unknown }>;
+  notRun?: Array<{ resource: string; id?: string }>;
+  /** What a move cannot rewrite, and what to do instead. */
+  notChanged?: Array<{ resource: string; value: string; reason: string }>;
+  /** After a refusal: the body to send again once it is fixed. */
+  retry?: { body: { to: string; from: string }; note: string };
+}
+
 export interface ConfigDryRun {
   dryRun: true;
   /** The config as it would be saved. */
   config: SiteConfig;
   /** Every leaf that would change. */
   diff: ConfigChange[];
+  /** False: the site has never had a config saved, so `diff` is against the defaults. */
+  storedConfig?: false;
   warnings?: ConfigWarning[];
   /** Consent-button parity of the would-be config (see {@link ButtonParityFinding}). */
   designWarnings: ButtonParityFinding[];
@@ -1549,6 +1616,8 @@ export interface RightsIdentity {
   sessionCookieName?: string;
   /** Present (true) only when set: clerk/atlas tokens without the verified claim are accepted. */
   trustEmailClaim?: true;
+  /** The setting a move replaced (`keepPreviousDays`): its sessions verify until `until` (ms). */
+  previous?: { issuer: string; until: number };
   status: 'verified' | 'not_configured';
   verifiedAt: number | null;
   updatedAt: number | null;
@@ -1580,6 +1649,8 @@ export interface RightsIdentityInput {
    * address it puts in the email claim is verified: a token without the verified claim is accepted.
    */
   trustEmailClaim?: boolean;
+  /** The issuer or key set changes (a domain move): sessions signed by the old one verify for this many days (1–30). */
+  keepPreviousDays?: number;
 }
 
 /** The organisation's own data-controller identity (GET /v1/org/controller). */
@@ -2049,6 +2120,9 @@ export interface ExecutorProfile {
 }
 
 /** A system connected to run part of a rights request. Credentials are never included. */
+/** A case source or origin a connection's `approvalExcept` may name. */
+export type ApprovalExcept = 'product' | 'identity' | 'rights_page' | 'admin' | 'account_deletion' | 'processor_forward';
+
 export interface DsarExecutor {
   id: string;
   /** The name it answers to in a fulfillment plan, e.g. `identity` or `crm`. */
@@ -2099,6 +2173,8 @@ export interface DsarExecutor {
   completionsUrl?: string;
   /** True: its erasures wait (status `awaiting_approval`) for `approveTask` or `rejectTask`. */
   requireApproval?: boolean;
+  /** With requireApproval: case sources/origins whose erasures skip it, e.g. ['account_deletion']. A legal hold always waits. */
+  approvalExcept?: ApprovalExcept[];
   /** Systems whose tasks must finish first. */
   runAfter?: string[];
   /** A sandbox fixture: no system behind it. */
@@ -2188,6 +2264,8 @@ export interface DsarExecutorPresetInput {
   orchestrator?: 1 | 2;
   /** Park its erasures for a person's approval. Default false. */
   requireApproval?: boolean;
+  /** With requireApproval: case sources/origins whose erasures skip it, e.g. ['account_deletion']. A legal hold always waits. */
+  approvalExcept?: ApprovalExcept[];
   /**
    * Any of the preset's params by name, as `executorPresets()` lists them: `{ programId }` for referalli
    * (one program of a shared organisation), `{ projectId }` for lucida, `{ scopeName, scopeId }` for
@@ -2319,6 +2397,8 @@ export interface DsarExecutorInput {
   orchestrator?: 1 | 2;
   /** Park its erasures for a person's approval. Default false. */
   requireApproval?: boolean;
+  /** With requireApproval: case sources/origins whose erasures skip it, e.g. ['account_deletion']. A legal hold always waits. */
+  approvalExcept?: ApprovalExcept[];
 }
 
 export type DsarExecutorCreated = DsarExecutor & {
@@ -2344,6 +2424,8 @@ export interface DsarExecutorPatch {
   orchestrator?: 1 | 2;
   /** Park its erasures for approval; false stops parking new ones (parked ones still wait). */
   requireApproval?: boolean;
+  /** With requireApproval: case sources/origins whose erasures skip it, e.g. ['account_deletion']. A legal hold always waits. */
+  approvalExcept?: ApprovalExcept[] | null;
   /**
    * Another preset of the same family (cm-standard-v1 → cm-standard-v2) moves the connection in place, keeping its
    * id, credentials and history; any other preset change is 409 immutable_field.
@@ -2548,6 +2630,8 @@ export interface CookieMunchClient {
      * move clears verification. `{ dryRun: true }` answers with the diff and stores nothing.
      */
     update(cbid: string, patch: SiteUpdate, opts?: { dryRun?: boolean }): Promise<SiteUpdateResult>;
+    /** Move the site to a new domain: every stored value naming the old host, rewritten. Call again after a refusal to finish. */
+    move(cbid: string, input: SiteMoveInput, opts?: { dryRun?: boolean }): Promise<SiteMoveResult>;
     delete(cbid: string): Promise<void>;
     /** Purge a SANDBOX site: its consent ledger, declarations and test rights requests too. Anything else: 403 not_a_sandbox. */
     deleteSandbox(cbid: string): Promise<SandboxPurge>;
@@ -3163,7 +3247,7 @@ export interface CookieMunchClient {
     delete(): Promise<SandboxPurge>;
   };
   /** Every link a site's privacy wiring depends on, one row each with `ok` and a fix hint. `cbid` may be omitted with one site. */
-  integrationHealth(cbid?: string): Promise<IntegrationHealthReport>;
+  integrationHealth(cbid?: string, opts?: { preDeploy?: boolean }): Promise<IntegrationHealthReport>;
   /** Waive a health check you chose not to meet: the row reports `ok: null` with `waived`. Audited. */
   healthWaivers: {
     list(cbid?: string): Promise<{ cbid: string; waivers: HealthWaiver[] }>;
@@ -3299,6 +3383,22 @@ export interface CookieMunchClient {
     rotate(cbid: string): Promise<ConsentSyncSecretMinted>;
     /** Turn hosted consent sync off for the site. */
     remove(cbid: string): Promise<ConsentSyncSecret>;
+  };
+  /**
+   * Sites for your own customers (a creator, a shop), each the controller for its own visitors. A path tenant lives on
+   * your host and is not counted against the plan's domains; its cases reach your cm-standard-v2 connections with
+   * `scope.tenant` = externalId. Every call takes the parent site's cbid and your id for the customer.
+   */
+  tenants: {
+    create(parentCbid: string, input: TenantInput, opts?: { dryRun?: boolean }): Promise<Tenant>;
+    /** Up to 100; each is idempotent by externalId, so send the same list again to resume. */
+    createBulk(parentCbid: string, tenants: TenantInput[], opts?: { dryRun?: boolean }): Promise<{ dryRun?: boolean; results: Array<Partial<Tenant> & { ok: boolean; status: number; error?: string; code?: string; field?: string }> }>;
+    list(parentCbid: string, opts?: { limit?: number; cursor?: string }): Promise<TenantPage>;
+    /** Every tenant, page after page. */
+    listAll(parentCbid: string): AsyncGenerator<Tenant>;
+    get(parentCbid: string, externalId: string): Promise<Tenant>;
+    update(parentCbid: string, externalId: string, patch: { name?: string | null; path?: string; controller?: TenantInput['controller'] }, opts?: { dryRun?: boolean }): Promise<Tenant>;
+    delete(parentCbid: string, externalId: string, opts?: { dryRun?: boolean }): Promise<void | { dryRun: true; wouldDelete: Tenant }>;
   };
   /**
    * A site's rights-page captcha: your own Turnstile, hCaptcha or reCAPTCHA keys (recommended), or off. A site
@@ -3480,6 +3580,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       create: (input) => request('POST', '/sites', input) as Promise<Site>,
       get: (cbid) => get(`/sites/${enc(cbid)}`) as Promise<Site>,
       update: (cbid, patch, o) => request('PATCH', `/sites/${enc(cbid)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, patch) as Promise<SiteUpdateResult>,
+      move: (cbid, input, o) => request('POST', `/sites/${enc(cbid)}/move${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<SiteMoveResult>,
       delete: async (cbid) => {
         await request('DELETE', `/sites/${enc(cbid)}`);
       },
@@ -3861,7 +3962,7 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       create: (input) => request('POST', '/sandbox', input ?? {}) as Promise<SandboxCreated>,
       delete: () => request('DELETE', '/sandbox') as Promise<SandboxPurge>,
     },
-    integrationHealth: (cbid) => get(`/integration-health${qs({ cbid })}`) as Promise<IntegrationHealthReport>,
+    integrationHealth: (cbid, opts) => get(`/integration-health${qs({ cbid, ...(opts?.preDeploy ? { preDeploy: '1' } : {}) })}`) as Promise<IntegrationHealthReport>,
     healthWaivers: {
       list: (cbid) => get(`/integration-health/waivers${qs({ cbid })}`) as Promise<{ cbid: string; waivers: HealthWaiver[] }>,
       set: (input) => request('PUT', '/integration-health/waivers', input) as Promise<{ waiver: HealthWaiver }>,
@@ -3949,6 +4050,22 @@ export function createCookieMunch(opts: CookieMunchOptions): CookieMunchClient {
       get: (cbid) => get(`/sites/${enc(cbid)}/consent-sync-secret`) as Promise<ConsentSyncSecret>,
       rotate: (cbid) => request('POST', `/sites/${enc(cbid)}/consent-sync-secret`) as Promise<ConsentSyncSecretMinted>,
       remove: (cbid) => request('DELETE', `/sites/${enc(cbid)}/consent-sync-secret`) as Promise<ConsentSyncSecret>,
+    },
+    tenants: {
+      create: (p, input, o) => request('POST', `/sites/${enc(p)}/tenants${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, input) as Promise<Tenant>,
+      createBulk: (p, tenants, o) => request('POST', `/sites/${enc(p)}/tenants/bulk${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, { tenants }) as never,
+      list: (p, o) => get(`/sites/${enc(p)}/tenants${qs({ limit: o?.limit !== undefined ? String(o.limit) : undefined, cursor: o?.cursor })}`) as Promise<TenantPage>,
+      async *listAll(p) {
+        let cursor: string | undefined;
+        do {
+          const page = (await get(`/sites/${enc(p)}/tenants${qs({ limit: '500', cursor })}`)) as TenantPage;
+          yield* page.tenants;
+          cursor = page.nextCursor ?? undefined;
+        } while (cursor);
+      },
+      get: (p, id) => get(`/sites/${enc(p)}/tenants/${enc(id)}`) as Promise<Tenant>,
+      update: (p, id, patch, o) => request('PATCH', `/sites/${enc(p)}/tenants/${enc(id)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`, patch) as Promise<Tenant>,
+      delete: (p, id, o) => request('DELETE', `/sites/${enc(p)}/tenants/${enc(id)}${qs({ dryRun: o?.dryRun ? '1' : undefined })}`) as never,
     },
     rightsCaptcha: {
       get: (cbid) => get(`/sites/${enc(cbid)}/rights-captcha`) as Promise<RightsCaptcha>,

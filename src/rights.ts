@@ -47,6 +47,46 @@ export interface RightsLookupInput {
   emails: string[];
   /** A signed-in identity (sent as `identity`, or `atlas`). Match on it before the emails, and never through an email that belongs to a different identity. */
   identity?: RightsIdentity;
+  /**
+   * The part of your account the request is for, when Cookie Munch sends one: `{ tenant }` for a tenant site's case
+   * (your id for the customer, /docs/tenants), or a connection's own scope such as `{ programId }`. Look only inside
+   * it. The handler echoes it on the answer, which Cookie Munch requires before it sends anything further.
+   */
+  scope?: Record<string, unknown>;
+}
+
+/** What `byEmail` answers: account ids, or `{ id, subject }` when the account is linked to an identity. */
+export type RightsEmailMatch = string | { id: string; subject?: string | null };
+
+/**
+ * `lookup` as two finders: the SDK applies the identity-first rule (LinkHub CM-X5, snapnedit CM-I2). With an
+ * identity it asks `bySubject` first; it then tries each email in order and drops an account linked to a
+ * different subject, so a request signed in as one person never reaches another's account through a shared email.
+ * Include deleted (tombstoned) accounts in both, so a closure filed after the deletion still matches.
+ */
+export interface RightsLookupFinders {
+  /** `scope`: as RightsLookupInput.scope; look only inside it. */
+  bySubject?: (sub: string, identity: RightsIdentity, scope?: Record<string, unknown>) => Promise<string | null | undefined> | string | null | undefined;
+  byEmail: (email: string, scope?: Record<string, unknown>) => Promise<RightsEmailMatch[] | RightsEmailMatch | null | undefined> | RightsEmailMatch[] | RightsEmailMatch | null | undefined;
+}
+
+/** The identity-first rule over two finders. Exported for products that call it themselves. */
+export async function lookupByRule(f: RightsLookupFinders, input: RightsLookupInput): Promise<string | null> {
+  const sub = input.identity?.sub;
+  if (sub && f.bySubject) {
+    const id = await f.bySubject(sub, input.identity!, input.scope);
+    if (typeof id === 'string' && id) return id;
+  }
+  for (const email of input.emails) {
+    const found = await f.byEmail(email, input.scope);
+    const list = found == null ? [] : Array.isArray(found) ? found : [found];
+    for (const m of list) {
+      const id = typeof m === 'string' ? m : m?.id;
+      const other = typeof m === 'object' && m?.subject && sub && m.subject !== sub;
+      if (typeof id === 'string' && id && !other) return id;
+    }
+  }
+  return null;
 }
 
 export interface RightsRetention {
@@ -105,8 +145,8 @@ export interface RightsHandlersOptions {
   key: string;
   /** Signs request ids; at least 32 characters, the same on every instance and across restarts. */
   idSecret: string;
-  /** The subject id for these emails / this identity, or null. */
-  lookup: (input: RightsLookupInput) => Promise<string | null | undefined> | string | null | undefined;
+  /** The subject id for these emails / this identity, or null. Or two finders, and the SDK applies the identity-first rule. */
+  lookup: ((input: RightsLookupInput) => Promise<string | null | undefined> | string | null | undefined) | RightsLookupFinders;
   access?: Callback;
   /** `portability`: the person's data in a machine-readable form. Without it, `access` answers it. */
   portability?: Callback;
@@ -128,6 +168,14 @@ export interface RightsHandlersOptions {
    * `sqlStore({ query })`, `redisStore(client)` or `ioredisStore(client)`.
    */
   store?: RightsStore;
+  /**
+   * Stateless (LinkHub CM-L2): keep no table. Cookie Munch signs each request's state (`Cookiemunch-Request-State`,
+   * an EdDSA JWS from its platform key) on every read, run and cancel; when the store holds nothing for a request,
+   * the handlers use that state instead, so a scheduled erasure still runs after a restart or on another instance.
+   * `true` verifies against https://api.cookiemunch.net/v1/partner/jwks.json; or pass `{ jwksUrl }` or `{ jwks }`.
+   * Your callbacks must then be safe to repeat for one caseId: a retried open whose first answer was lost runs again.
+   */
+  stateless?: boolean | { jwksUrl?: string; jwks?: { keys: JsonWebKey[] } };
   now?: () => number;
   /**
    * Signed completions (cm-standard-v2): the connection's `completionUrl` and its `completionSecret`
@@ -221,7 +269,9 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   // A warning, not a throw: Cookie Munch has accepted 8-character keys, and an SDK upgrade must not take a working rights endpoint down.
   if (o.key.length < 24) console.warn('createRightsHandlers: key is shorter than 24 characters; rotate it to a longer one (PATCH /v1/dsar/executors/{id} {secretKey}) so it cannot be guessed');
   if (typeof o.idSecret !== 'string' || o.idSecret.length < 32) throw new Error('createRightsHandlers: idSecret must be at least 32 characters');
-  if (typeof o.lookup !== 'function') throw new Error('createRightsHandlers: lookup is required');
+  const finders = typeof o.lookup === 'object' && o.lookup !== null ? o.lookup : null;
+  if (finders ? typeof finders.byEmail !== 'function' : typeof o.lookup !== 'function') throw new Error('createRightsHandlers: lookup is required (a function, or { bySubject?, byEmail })');
+  const find = finders ? (i: RightsLookupInput) => lookupByRule(finders, i) : (o.lookup as (i: RightsLookupInput) => Promise<string | null | undefined> | string | null | undefined);
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error('createRightsHandlers: needs Web Crypto (globalThis.crypto.subtle)');
   // shortcut: the default Map keeps an expired idempotency answer until it is read again; fine for the volume of rights requests, pass `store` for more.
@@ -258,10 +308,44 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     }
   }
 
-  const getStored = async (id: string): Promise<Stored | null> => {
+  const getStored = async (id: string, signed?: Stored | null): Promise<Stored | null> => {
     const v = await store.get(`req:${id}`);
-    return v ? (JSON.parse(v) as Stored) : null;
+    return v ? (JSON.parse(v) as Stored) : (signed ?? null);
   };
+
+  // ---- stateless: the request state Cookie Munch signs (CM-L2) ----
+  const sl = o.stateless === true ? {} : o.stateless || null;
+  const jwksUrl = sl?.jwksUrl ?? 'https://api.cookiemunch.net/v1/partner/jwks.json';
+  let keys: Map<string, Promise<CryptoKey>> | null = null;
+  let keysAt = 0;
+  const loadKeys = async (jwks?: { keys: JsonWebKey[] }) => {
+    const list = jwks?.keys ?? ((await (await globalThis.fetch(jwksUrl)).json()) as { keys: JsonWebKey[] }).keys;
+    keys = new Map(list.filter((k) => k.kty === 'OKP' && k.crv === 'Ed25519').map((k) => [(k as { kid?: string }).kid ?? '', subtle.importKey('jwk', k, { name: 'Ed25519' }, false, ['verify'])]));
+    keysAt = now();
+  };
+  const STATE_STATUSES = new Set<string>([...OUTCOMES, 'scheduled', 'cancelled']);
+  /** The verified state for `id` from the request's header, or null: a bad, expired or foreign one is ignored. */
+  async function signedState(req: Request, id: string): Promise<Stored | null> {
+    const jws = sl && req.headers.get('cookiemunch-request-state');
+    if (!jws) return null;
+    try {
+      const [h, p, sig, extra] = jws.split('.');
+      if (!h || !p || !sig || extra !== undefined) return null;
+      const header = JSON.parse(dec.decode(fromB64url(h) ?? new Uint8Array())) as { alg?: string; kid?: string };
+      if (header.alg !== 'EdDSA' || !header.kid) return null;
+      // An unknown kid refetches the key set, at most every five minutes (a rotated key).
+      if (!keys || (!keys.has(header.kid) && !sl.jwks && now() - keysAt > 300_000)) await loadKeys(sl.jwks);
+      const key = keys!.get(header.kid);
+      const sigBytes = fromB64url(sig);
+      if (!key || !sigBytes || !(await subtle.verify({ name: 'Ed25519' }, await key, sigBytes, enc.encode(`${h}.${p}`)))) return null;
+      const cl = JSON.parse(dec.decode(fromB64url(p)!)) as { id?: string; status?: string; executeAfter?: string; exp?: number };
+      const t = now() / 1000;
+      if (cl.id !== id || typeof cl.exp !== 'number' || cl.exp < t || cl.exp > t + 900 || !cl.status || !STATE_STATUSES.has(cl.status)) return null;
+      return { status: cl.status as RightsStatus, ...(cl.status === 'scheduled' && cl.executeAfter ? { eta: cl.executeAfter } : {}) };
+    } catch {
+      return null;
+    }
+  }
   const putStored = async (id: string, s: Stored) => {
     await store.set(`req:${id}`, JSON.stringify(s));
   };
@@ -361,16 +445,20 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
       return bad('identity must be { iss, sub, ext?, principal? }', 'identity');
     }
     const identity = isObject(raw) ? (raw as unknown as RightsIdentity) : undefined;
+    if (body.scope !== undefined && !isObject(body.scope)) return bad('scope must be an object', 'scope');
+    const scope = isObject(body.scope) ? (body.scope as Record<string, unknown>) : undefined;
+    // The scope goes back on every answer: Cookie Munch sends nothing further to a lookup that does not echo it.
+    const echo = scope ? { scope } : {};
 
     const canaryByEmail = emails.map((e) => CANARY_EMAIL.exec(e.toLowerCase())?.[1]).find(Boolean);
     const canaryExt = typeof identity?.ext === 'string' ? CANARY_EXT.exec(identity.ext)?.[1] : undefined;
     if (canaryByEmail || canaryExt || identity?.iss === CANARY_ISSUER) {
       // When an identity is given only it decides: the canary's email next to anyone else's identity is no one.
       const tag = identity ? (identity.iss === CANARY_ISSUER ? CANARY_SUBJECT.exec(identity.sub)?.[1] : undefined) ?? canaryExt : canaryByEmail;
-      return json(200, tag ? { subjectId: `canary_${tag}`, status: 'found' } : { subjectId: null, status: 'no_match' });
+      return json(200, tag ? { subjectId: `canary_${tag}`, status: 'found', ...echo } : { subjectId: null, status: 'no_match', ...echo });
     }
-    const subjectId = await o.lookup({ emails, ...(identity ? { identity } : {}) });
-    return json(200, typeof subjectId === 'string' && subjectId ? { subjectId, status: 'found' } : { subjectId: null, status: 'no_match' });
+    const subjectId = await find({ emails, ...(identity ? { identity } : {}), ...(scope ? { scope } : {}) });
+    return json(200, typeof subjectId === 'string' && subjectId ? { subjectId, status: 'found', ...echo } : { subjectId: null, status: 'no_match', ...echo });
   }
 
   async function open(body: Record<string, unknown>): Promise<Response> {
@@ -399,8 +487,8 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
     return json(201, view(id, c, await act(id, c, s, cb)));
   }
 
-  async function read(id: string, c: IdClaims): Promise<Response> {
-    let s = await getStored(id);
+  async function read(id: string, c: IdClaims, signed?: Stored | null): Promise<Response> {
+    let s = await getStored(id, signed);
     if (!s) {
       // A genuine id whose state is gone (an emptied store): never act on it, say so.
       return json(200, view(id, c, { status: 'rejected', detail: "this system no longer holds the request's state; nothing was done. Open it again." }));
@@ -411,14 +499,14 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   }
 
   /** Run a scheduled erasure whose executeAfter has passed; anything else answers as a read. Safe to repeat. */
-  async function run(id: string, c: IdClaims): Promise<Response> {
-    const s = await getStored(id);
+  async function run(id: string, c: IdClaims, signed?: Stored | null): Promise<Response> {
+    const s = await getStored(id, signed);
     if (s?.status === 'scheduled' && c.a !== undefined && now() >= c.a) return json(200, view(id, c, await act(id, c, s, callbackFor(c.t))));
-    return read(id, c);
+    return read(id, c, signed);
   }
 
-  async function cancel(id: string, c: IdClaims): Promise<Response> {
-    const s = await getStored(id);
+  async function cancel(id: string, c: IdClaims, signed?: Stored | null): Promise<Response> {
+    const s = await getStored(id, signed);
     if (!s) return json(409, { error: "this system no longer holds the request's state", field: 'id' });
     if (s.status === 'cancelled') return json(200, view(id, c, s));
     if (s.status !== 'scheduled' && s.status !== 'pending') return json(409, { error: `too late to cancel a ${s.status} request`, field: 'id' });
@@ -476,9 +564,10 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
       }
       const c = await readId(id);
       if (!c) return json(404, { error: 'unknown request' });
-      if (action === 'cancel' && method === 'POST') res = await cancel(id, c);
-      else if (action === 'run' && method === 'POST') res = await run(id, c);
-      else if (!action && method === 'GET') res = await read(id, c);
+      const signed = await signedState(req, id);
+      if (action === 'cancel' && method === 'POST') res = await cancel(id, c, signed);
+      else if (action === 'run' && method === 'POST') res = await run(id, c, signed);
+      else if (!action && method === 'GET') res = await read(id, c, signed);
       else return json(404, { error: 'not_found' });
     } else return json(404, { error: 'not_found' });
 
@@ -498,7 +587,8 @@ export function createRightsHandlers(o: RightsHandlersOptions): RightsHandlers {
   async function complete(requestId: string, outcome?: RightsOutcome): Promise<{ status: RightsStatus; delivered: boolean }> {
     const c = await readId(requestId);
     if (!c) throw new Error('createRightsHandlers.complete: not a request id these handlers issued');
-    const s = await getStored(requestId);
+    // Stateless: your system finished the request, so its state is yours to assert.
+    const s = (await getStored(requestId)) ?? (sl ? { status: 'processing' as const } : null);
     if (!s) throw new Error("createRightsHandlers.complete: this system no longer holds the request's state");
     if (FINAL.has(s.status)) return { status: s.status, delivered: await notify(requestId, c, s) };
     const next = await record(requestId, s, outcome ?? { status: 'completed' });

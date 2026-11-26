@@ -2,6 +2,23 @@
 
 Every published release, newest first. Dates are the day the version was cut.
 
+## 0.39.0 (2026-11-25)
+
+- Added: `client.tenants` (`create`, `createBulk`, `list`, `listAll`, `get`, `update`, `delete`): sites for your own customers, each the controller for its own visitors. See /docs/tenants.
+- Added: `client.sites.move(cbid, { to, from?, keepOld?, trustOldDays? }, { dryRun })` moves a site to a new domain in one call.
+- Added: rights handlers `stateless: true` (or `{ jwks }` / `{ jwksUrl }`): with no stored state for a request, the state Cookie Munch signs in `Cookiemunch-Request-State` is used, so no table is needed.
+- Added: `lookup` receives the request's `scope` (`{ tenant }` for a tenant's case), finders get it as their last argument, and the lookup answer echoes it.
+- Added: `lookup: { bySubject, byEmail }` and `lookupByRule`: the identity-first rule, enforced.
+- Added: `DsarCase.alsoFiledBy` and `merged`; `ApprovalExcept` and `approvalExcept` on connections; `okMeaning` and the `preDeploy` option on health; `attributes` on the install snippet; `keepPreviousDays` on a site's rights identity; `parent` on a site.
+
+## 0.38.0 (2026-11-25)
+
+- Added: `prismaStore(prisma)`, a rights-handler store on a Prisma client, and `RIGHTS_STORE_PRISMA_MODEL`, the `sqlStore` table as a Prisma model to paste into `schema.prisma`. The `sqlStore` query contract is documented.
+
+## 0.37.0 (2026-11-20)
+
+- Changed: doc comments say a full-access key already holds the partner-sync scopes and can manage keys in every org on its account (`orgs:keys`). No API change.
+
 ## 0.36.0 (2026-11-18)
 
 - Added: `@cookiemunch/sdk/rights/fastify`, a Fastify (v4/v5) plugin for the rights handlers: `app.register(fastifyRights(handlers), { prefix: '/privacy' })`. It reads request bodies as raw bytes inside its own scope, so signatures verify and the rest of the app keeps its JSON parser.

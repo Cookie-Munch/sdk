@@ -124,6 +124,8 @@ export interface HealthRow {
   error?: string;
   /** A waiver covers this failing row; `ok` is then null. */
   waived?: { reason: string; by: string; until: number | null };
+  /** `preDeploy`: this row fails on every site before its tag is live, so `ok` is null. */
+  expectedBeforeGoLive?: true;
   /** `check:subject`, unique in a report: one check run for two connections is two rows with two keys. */
   key: string;
   /** Failing rows: why, in one sentence (the same as `detail`). */
@@ -140,6 +142,10 @@ export interface IntegrationHealthReport {
   generatedAt: string;
   /** No failing error or warning (from API version 2026-11-11: no failing error; warnings allowed). */
   ok: boolean;
+  /** What `ok` means in this answer: `no_errors` from API version 2026-11-11, else `no_errors_or_warnings`. */
+  okMeaning?: 'no_errors' | 'no_errors_or_warnings';
+  /** Asked with `preDeploy`: checks that pass only once the tag is live were not counted. */
+  preDeploy?: true;
   /** No failing error or warning at all, in every API version. */
   clean?: boolean;
   counts: { error: number; warning: number; notChecked: number; waived: number };
@@ -448,6 +454,10 @@ export interface DsarCase {
   processor: DsarProcessorForward | null;
   /** origin processor_forward: the processor that passed it on. */
   forwardedFrom: { orgId: string; name: string; cbid: string; caseId: string } | null;
+  /** Closures another filer sent for the same person while this one was open, merged into it. */
+  alsoFiledBy?: Array<{ source: string; by?: string; at: string }>;
+  /** In the answer to a filing that joined an open closure: true the first time this filer joined. */
+  merged?: boolean;
   tasks: DsarCaseTask[];
   receiptUrl: string;
   /** Lets the person who asked read this case through POST /api/v1/public/dsar/status. */

@@ -77,6 +77,22 @@ describe('createRightsHandlers', () => {
     expect(await (await call('POST', '/lookup', { emails: ['ana@example.com'] })).json()).toEqual({ subjectId: 'u1', status: 'found' });
   });
 
+  it('passes the scope to lookup and echoes it on the answer, found or not (tenants, /docs/tenants)', async () => {
+    const seen: unknown[] = [];
+    const { call } = make({ lookup: ({ emails, scope }) => { seen.push(scope); return scope?.tenant === 'user_123' && emails.includes('fan@example.com') ? 'fan_1' : null; } });
+    expect(await (await call('POST', '/lookup', { emails: ['fan@example.com'], scope: { tenant: 'user_123' } })).json()).toEqual({ subjectId: 'fan_1', status: 'found', scope: { tenant: 'user_123' } });
+    expect(await (await call('POST', '/lookup', { emails: ['fan@example.com'], scope: { tenant: 'other' } })).json()).toEqual({ subjectId: null, status: 'no_match', scope: { tenant: 'other' } });
+    expect(seen).toEqual([{ tenant: 'user_123' }, { tenant: 'other' }]);
+    expect((await call('POST', '/lookup', { emails: [], scope: 'x' })).status).toBe(400);
+  });
+
+  it('gives finders the scope as their last argument', async () => {
+    const got: unknown[] = [];
+    const { call } = make({ lookup: { byEmail: (e, scope) => { got.push([e, scope]); return null; } } });
+    await call('POST', '/lookup', { emails: ['a@example.com'], scope: { tenant: 't' } });
+    expect(got).toEqual([['a@example.com', { tenant: 't' }]]);
+  });
+
   it('accepts the identity as `atlas` too, and validates the lookup body', async () => {
     const { call } = make();
     expect(await (await call('POST', '/lookup', { emails: [], atlas: { iss: 'https://id.example', sub: 'user_ana' } })).json()).toEqual({ subjectId: 'u1', status: 'found' });
@@ -566,5 +582,23 @@ describe('the export rule (testSubjectEmail, Lucida CM6)', () => {
   it('is skipped without testSubjectEmail', async () => {
     const r = await runExecutorConformance({ ...opts, testSubjectEmail: undefined, fetch: via(exporting({})) } as never);
     expect(rule(r)).toBeUndefined();
+  });
+});
+
+describe('lookupByRule (LinkHub CM-X5)', async () => {
+  const { lookupByRule } = await import('../src/rights.js');
+  const identity = { iss: 'https://id.example', sub: 'sub_alice' };
+  it('the subject wins over the emails', async () => {
+    expect(await lookupByRule({ bySubject: (s) => (s === 'sub_alice' ? 'acct_a' : null), byEmail: () => 'acct_b' }, { emails: ['a@x.com'], identity })).toBe('acct_a');
+  });
+  it('never reaches an account linked to another subject through a shared email', async () => {
+    const byEmail = () => [{ id: 'acct_bob', subject: 'sub_bob' }, { id: 'acct_alice_old' }];
+    expect(await lookupByRule({ byEmail }, { emails: ['shared@x.com'], identity })).toBe('acct_alice_old');
+    expect(await lookupByRule({ byEmail: () => [{ id: 'acct_bob', subject: 'sub_bob' }] }, { emails: ['shared@x.com'], identity })).toBeNull();
+    // With no identity there is no one to protect, so the email decides.
+    expect(await lookupByRule({ byEmail }, { emails: ['shared@x.com'] })).toBe('acct_bob');
+  });
+  it('tries emails in order and takes plain ids', async () => {
+    expect(await lookupByRule({ byEmail: (e) => (e === 'b@x.com' ? 'acct_b' : null) }, { emails: ['a@x.com', 'b@x.com'] })).toBe('acct_b');
   });
 });
